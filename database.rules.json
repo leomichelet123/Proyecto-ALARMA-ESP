@@ -13,7 +13,7 @@
     "alarmas": {
       "$alarmaId": {
         "usuarios": {
-          ".read": "auth != null && data.child(auth.uid).exists()",
+          ".read": "auth != null",
           "$uid": {
             ".write": "auth != null && ( auth.uid === $uid || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() )"
           }
