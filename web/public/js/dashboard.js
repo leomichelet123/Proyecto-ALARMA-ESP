@@ -1,10 +1,27 @@
-// ---------- Protección de ruta ----------
-auth.onAuthStateChanged((user) => {
+let alarmaId = null;
+let miUid = null;
+
+// ---------- Protección de ruta + resolver a qué alarma pertenezco ----------
+auth.onAuthStateChanged(async (user) => {
   if (!user) {
     window.location.href = 'index.html';
-  } else {
-    document.getElementById('user-email').textContent = user.email;
+    return;
   }
+
+  miUid = user.uid;
+  document.getElementById('user-email').textContent = user.email;
+
+  const snap = await db.ref('userAlarma/' + user.uid).once('value');
+  alarmaId = snap.val();
+
+  if (!alarmaId) {
+    // Cuenta sin alarma asignada (no debería pasar en uso normal)
+    await auth.signOut();
+    window.location.href = 'index.html';
+    return;
+  }
+
+  iniciarEscuchas();
 });
 
 document.getElementById('btn-logout').addEventListener('click', () => {
@@ -44,7 +61,6 @@ document.getElementById('modal-overlay').addEventListener('click', () => {
   document.getElementById('modal-overlay').classList.remove('open');
 });
 
-// ---------- Estado de sensores ----------
 function actualizarEstadoSensor(sensorId, ultimoTimestamp) {
   const dot = document.getElementById(`dot-sensor-${sensorId}`);
   const status = document.getElementById(`status-sensor-${sensorId}`);
@@ -61,62 +77,107 @@ function actualizarEstadoSensor(sensorId, ultimoTimestamp) {
   status.textContent = `Última alarma: ${tiempoRelativo(ultimoTimestamp)}`;
 }
 
-// ---------- Histórico en tiempo real ----------
-const historyList = document.getElementById('history-list');
-const emptyState = document.getElementById('empty-state');
+// ---------- Escuchas en tiempo real (una vez que sabemos la alarmaId) ----------
+function iniciarEscuchas() {
+  escucharUsuarios();
+  escucharHistorial();
+}
 
-const alarmasRef = db.ref('alarmas').orderByChild('timestamp').limitToLast(100);
+function escucharUsuarios() {
+  const usersList = document.getElementById('users-list');
 
-alarmasRef.on('value', (snapshot) => {
-  const data = snapshot.val();
-  historyList.innerHTML = '';
+  db.ref('alarmas/' + alarmaId + '/usuarios').on('value', (snapshot) => {
+    const data = snapshot.val() || {};
+    usersList.innerHTML = '';
 
-  if (!data) {
-    emptyState.style.display = 'block';
-    actualizarEstadoSensor(1, null);
-    actualizarEstadoSensor(2, null);
-    return;
-  }
+    Object.entries(data).forEach(([uid, u]) => {
+      const item = document.createElement('div');
+      item.className = 'history-item';
+      item.style.gridTemplateColumns = '1fr auto';
 
-  emptyState.style.display = 'none';
+      const esUnoMismo = uid === miUid;
 
-  // Convertir a array y ordenar del más reciente al más viejo
-  const alarmas = Object.values(data).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      item.innerHTML = `
+        <div>
+          <div class="history-sensor">${u.nombre}${esUnoMismo ? ' (vos)' : ''}</div>
+          <div class="history-time">${u.email}</div>
+        </div>
+      `;
 
-  // Últimas alarmas por sensor, para el panel de estado
-  const ultimaPorSensor = {};
-  alarmas.forEach((alarma) => {
-    if (!ultimaPorSensor[alarma.sensor]) {
-      ultimaPorSensor[alarma.sensor] = alarma.timestamp;
-    }
+      if (!esUnoMismo) {
+        const btnEliminar = document.createElement('button');
+        btnEliminar.textContent = 'Eliminar';
+        btnEliminar.className = 'link-btn';
+        btnEliminar.style.color = 'var(--alert)';
+        btnEliminar.addEventListener('click', () => {
+          if (confirm(`¿Quitar a ${u.nombre} de esta alarma?`)) {
+            db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove();
+          }
+        });
+        item.appendChild(btnEliminar);
+      }
+
+      usersList.appendChild(item);
+    });
   });
-  actualizarEstadoSensor(1, ultimaPorSensor[1]);
-  actualizarEstadoSensor(2, ultimaPorSensor[2]);
+}
 
-  // Renderizar lista
-  alarmas.forEach((alarma) => {
-    const item = document.createElement('div');
-    item.className = 'history-item';
+function escucharHistorial() {
+  const historyList = document.getElementById('history-list');
+  const emptyState = document.getElementById('empty-state');
 
-    const foto = alarma.photoUrl
-      ? `<img class="history-thumb" src="${alarma.photoUrl}" alt="Foto sensor ${alarma.sensor}">`
-      : `<div class="history-thumb"></div>`;
+  const alarmasRef = db.ref('alarmas/' + alarmaId + '/historial')
+    .orderByChild('timestamp')
+    .limitToLast(100);
 
-    item.innerHTML = `
-      ${foto}
-      <div>
-        <div class="history-sensor">Sensor ${alarma.sensor}</div>
-        <div class="history-time">${formatearFecha(alarma.timestamp)}</div>
-      </div>
-      <span class="badge">Movimiento</span>
-    `;
+  alarmasRef.on('value', (snapshot) => {
+    const data = snapshot.val();
+    historyList.innerHTML = '';
 
-    if (alarma.photoUrl) {
-      item.querySelector('.history-thumb').addEventListener('click', () => {
-        abrirModal(alarma.photoUrl);
-      });
+    if (!data) {
+      emptyState.style.display = 'block';
+      actualizarEstadoSensor(1, null);
+      actualizarEstadoSensor(2, null);
+      return;
     }
 
-    historyList.appendChild(item);
+    emptyState.style.display = 'none';
+
+    const alarmas = Object.values(data).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    const ultimaPorSensor = {};
+    alarmas.forEach((alarma) => {
+      if (!ultimaPorSensor[alarma.sensor]) {
+        ultimaPorSensor[alarma.sensor] = alarma.timestamp;
+      }
+    });
+    actualizarEstadoSensor(1, ultimaPorSensor[1]);
+    actualizarEstadoSensor(2, ultimaPorSensor[2]);
+
+    alarmas.forEach((alarma) => {
+      const item = document.createElement('div');
+      item.className = 'history-item';
+
+      const foto = alarma.photoUrl
+        ? `<img class="history-thumb" src="${alarma.photoUrl}" alt="Foto sensor ${alarma.sensor}">`
+        : `<div class="history-thumb"></div>`;
+
+      item.innerHTML = `
+        ${foto}
+        <div>
+          <div class="history-sensor">Sensor ${alarma.sensor}</div>
+          <div class="history-time">${formatearFecha(alarma.timestamp)}</div>
+        </div>
+        <span class="badge">Movimiento</span>
+      `;
+
+      if (alarma.photoUrl) {
+        item.querySelector('.history-thumb').addEventListener('click', () => {
+          abrirModal(alarma.photoUrl);
+        });
+      }
+
+      historyList.appendChild(item);
+    });
   });
-});
+}

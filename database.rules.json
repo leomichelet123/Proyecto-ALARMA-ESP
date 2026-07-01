@@ -1,0 +1,32 @@
+{
+  "rules": {
+    "codigosActivacion": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "userAlarma": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid && !data.exists()"
+      }
+    },
+    "alarmas": {
+      "$alarmaId": {
+        "usuarios": {
+          ".read": "auth != null && data.child(auth.uid).exists()",
+          "$uid": {
+            ".write": "auth != null && ( auth.uid === $uid || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() )"
+          }
+        },
+        "dispositivoUid": {
+          ".read": "auth != null && root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists()",
+          ".write": false
+        },
+        "historial": {
+          ".read": "auth != null && root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists()",
+          ".write": "auth != null && ( root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid )"
+        }
+      }
+    }
+  }
+}

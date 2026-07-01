@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Alarma ESP32 · Acceso</title>
+  <title>Alarma ESP32 · Activar</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -11,31 +11,35 @@
   <div class="login-screen">
     <div class="login-card">
       <div class="login-eyebrow">
-        <span>●</span> SISTEMA DE MONITOREO
+        <span>●</span> ACTIVACIÓN DE ALARMA
       </div>
-      <h1 class="login-title">Iniciar sesión</h1>
+      <h1 class="login-title">Activar con código</h1>
 
-      <form id="form-login">
+      <form id="form-activar">
+        <label for="codigo">Código de activación</label>
+        <input type="text" id="codigo" required maxlength="12" autocapitalize="characters" placeholder="Ej: ABC123XY">
+
+        <label for="nombre">Tu nombre</label>
+        <input type="text" id="nombre" required autocomplete="name">
+
         <label for="email">Correo electrónico</label>
         <input type="email" id="email" required autocomplete="email">
 
         <label for="password">Contraseña</label>
-        <input type="password" id="password" required autocomplete="current-password">
+        <input type="password" id="password" required autocomplete="new-password" minlength="6">
 
-        <button type="submit" id="btn-login">Ingresar</button>
+        <button type="submit" id="btn-activar">Activar y crear cuenta</button>
+        <a href="index.html"><button type="button" class="btn-secondary">Ya tengo cuenta, volver al login</button></a>
       </form>
-
-      <a href="activar.html"><button type="button" class="btn-secondary">Tengo un código de activación</button></a>
 
       <p class="error-msg" id="error-msg"></p>
     </div>
   </div>
 
-  <!-- Firebase SDK (versión compat, simple de usar sin bundler) -->
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
   <script src="js/firebase-config.js"></script>
-  <script src="js/auth.js"></script>
+  <script src="js/activar.js"></script>
 </body>
 </html>
