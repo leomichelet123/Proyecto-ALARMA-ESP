@@ -1,0 +1,10 @@
+# Credenciales locales (WiFi) - no se sube al repo
+firmware/src/config.h
+
+# PlatformIO
+firmware/.pio/
+firmware/.vscode/
+
+# Sistema
+.DS_Store
+Thumbs.db
