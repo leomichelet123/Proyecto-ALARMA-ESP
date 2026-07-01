@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alarma ESP32 · Acceso</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <div class="login-screen">
+    <div class="login-card">
+      <div class="login-eyebrow">
+        <span>●</span> SISTEMA DE MONITOREO
+      </div>
+      <h1 class="login-title">Iniciar sesión</h1>
+
+      <form id="form-login">
+        <label for="email">Correo electrónico</label>
+        <input type="email" id="email" required autocomplete="email">
+
+        <label for="password">Contraseña</label>
+        <input type="password" id="password" required autocomplete="current-password">
+
+        <button type="submit" id="btn-login">Ingresar</button>
+        <button type="button" class="btn-secondary" id="btn-registro">Crear una cuenta</button>
+      </form>
+
+      <p class="error-msg" id="error-msg"></p>
+    </div>
+  </div>
+
+  <!-- Firebase SDK (versión compat, simple de usar sin bundler) -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/auth.js"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+const form = document.getElementById('form-login');
+const btnLogin = document.getElementById('btn-login');
+const btnRegistro = document.getElementById('btn-registro');
+const errorMsg = document.getElementById('error-msg');
+
+function mostrarError(mensaje) {
+  errorMsg.textContent = mensaje;
+  errorMsg.style.display = 'block';
+}
+
+function ocultarError() {
+  errorMsg.style.display = 'none';
+}
+
+function traducirError(codigo) {
+  const mensajes = {
+    'auth/invalid-email': 'El correo electrónico no es válido.',
+    'auth/user-not-found': 'No existe una cuenta con ese correo.',
+    'auth/wrong-password': 'Contraseña incorrecta.',
+    'auth/invalid-credential': 'Correo o contraseña incorrectos.',
+    'auth/email-already-in-use': 'Ya existe una cuenta con ese correo.',
+    'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres.',
+  };
+  return mensajes[codigo] || 'Ocurrió un error. Intentá de nuevo.';
+}
+
+// Si ya hay sesión iniciada, ir directo al dashboard
+auth.onAuthStateChanged((user) => {
+  if (user) {
+    window.location.href = 'dashboard.html';
+  }
+});
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  ocultarError();
+
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+
+  btnLogin.disabled = true;
+  btnLogin.textContent = 'Ingresando...';
+
+  auth.signInWithEmailAndPassword(email, password)
+    .then(() => {
+      window.location.href = 'dashboard.html';
+    })
+    .catch((err) => {
+      mostrarError(traducirError(err.code));
+      btnLogin.disabled = false;
+      btnLogin.textContent = 'Ingresar';
+    });
+});
+
+btnRegistro.addEventListener('click', () => {
+  ocultarError();
+
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+
+  if (!email || !password) {
+    mostrarError('Completá correo y contraseña para crear la cuenta.');
+    return;
+  }
+
+  auth.createUserWithEmailAndPassword(email, password)
+    .then(() => {
+      window.location.href = 'dashboard.html';
+    })
+    .catch((err) => {
+      mostrarError(traducirError(err.code));
+    });
+});
