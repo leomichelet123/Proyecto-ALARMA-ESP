@@ -1,0 +1,17 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ==================== WiFi ====================
+#define WIFI_SSID     "TU_WIFI_AQUI"
+#define WIFI_PASSWORD "TU_PASSWORD_AQUI"
+
+// ==================== Firebase ====================
+// Sacados del firebaseConfig que copiaste desde la consola de Firebase
+#define FIREBASE_DATABASE_URL   "alarma-esp32-abc0c-default-rtdb.firebaseio.com"
+#define FIREBASE_STORAGE_BUCKET "alarma-esp32-abc0c.firebasestorage.app"
+
+// ==================== Pines ====================
+#define PIR1_PIN 13   // Sensor PIR 1
+#define PIR2_PIN 14   // Sensor PIR 2
+
+#endif
