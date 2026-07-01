@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alarma ESP32 · Panel</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="pulse-dot" id="pulse-general"></span>
+      <span class="topbar-title">Panel de Alarma</span>
+    </div>
+    <div class="topbar-user">
+      <span id="user-email"></span>
+      <button class="link-btn" id="btn-logout">Cerrar sesión</button>
+    </div>
+  </div>
+
+  <main>
+    <div class="section-title">Sensores</div>
+    <div class="sensor-row">
+      <div class="sensor-card">
+        <span class="pulse-dot" id="dot-sensor-1"></span>
+        <div class="sensor-info">
+          <div class="sensor-name">Sensor 1 · PIR</div>
+          <div class="sensor-status" id="status-sensor-1">Sin datos aún</div>
+        </div>
+      </div>
+      <div class="sensor-card">
+        <span class="pulse-dot" id="dot-sensor-2"></span>
+        <div class="sensor-info">
+          <div class="sensor-name">Sensor 2 · PIR</div>
+          <div class="sensor-status" id="status-sensor-2">Sin datos aún</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">Histórico de alarmas</div>
+    <div class="history-list" id="history-list">
+      <!-- Se completa dinámicamente -->
+    </div>
+
+    <div class="empty-state" id="empty-state" style="display:none;">
+      <div class="empty-state-title">Todavía no hay alarmas registradas</div>
+      <p>Cuando un sensor detecte movimiento, va a aparecer acá con foto y hora.</p>
+    </div>
+  </main>
+
+  <div class="modal-overlay" id="modal-overlay">
+    <img id="modal-img" src="" alt="Foto de la alarma">
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/dashboard.js"></script>
+</body>
+</html>
