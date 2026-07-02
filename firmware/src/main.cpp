@@ -8,9 +8,13 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include "esp_camera.h"
 #include "camera_pins.h"
 #include "config.h"
+
+// Token de sesión del dispositivo (se obtiene al autenticarse contra Firebase)
+String idToken = "";
 
 // Evita disparos repetidos del mismo sensor en poco tiempo
 #define TIEMPO_ENTRE_ALARMAS_MS 15000
@@ -20,6 +24,7 @@ unsigned long ultimaAlarmaPIR2 = 0;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
+bool autenticarDispositivo();
 bool inicializarCamara();
 camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo);
@@ -35,6 +40,12 @@ void setup() {
   pinMode(PIR2_PIN, INPUT);
 
   conectarWiFi();
+
+  if (autenticarDispositivo()) {
+    Serial.println("Credenciales del dispositivo verificadas.");
+  } else {
+    Serial.println("ADVERTENCIA: no se pudo autenticar el dispositivo. Revisar email/password en config.h");
+  }
 
   if (!inicializarCamara()) {
     Serial.println("ERROR: no se pudo inicializar la cámara. Reiniciando...");
@@ -92,7 +103,48 @@ void conectarWiFi() {
   }
 }
 
-// ==================== Cámara ====================
+// ==================== Autenticación del dispositivo ====================
+// Usa la cuenta creada en Authentication para obtener un token que permite
+// escribir en la base de datos y en Storage, según las reglas de seguridad.
+bool autenticarDispositivo() {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  String url = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + String(FIREBASE_API_KEY);
+
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+
+  String body = "{\"email\":\"" + String(FIREBASE_DEVICE_EMAIL) +
+                "\",\"password\":\"" + String(FIREBASE_DEVICE_PASSWORD) +
+                "\",\"returnSecureToken\":true}";
+
+  int httpCode = http.POST(body);
+  bool ok = false;
+
+  if (httpCode == 200) {
+    String respuesta = http.getString();
+    DynamicJsonDocument doc(4096);
+    DeserializationError error = deserializeJson(doc, respuesta);
+
+    if (!error && doc.containsKey("idToken")) {
+      idToken = doc["idToken"].as<String>();
+      ok = true;
+      Serial.println("Autenticado como dispositivo correctamente.");
+    } else {
+      Serial.println("No se pudo leer el token de la respuesta.");
+    }
+  } else {
+    Serial.printf("Error al autenticar el dispositivo. Código HTTP: %d\n", httpCode);
+    Serial.println(http.getString());
+  }
+
+  http.end();
+  return ok;
+}
+
+
 bool inicializarCamara() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -145,8 +197,11 @@ camera_fb_t* tomarFoto() {
 // ==================== Firebase Storage ====================
 // Sube la foto usando la REST API de Firebase Storage (Google Cloud Storage JSON API)
 String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
+  Serial.printf("Heap libre antes de subir foto: %u bytes (tamaño foto: %u bytes)\n", ESP.getFreeHeap(), fb->len);
+
   WiFiClientSecure client;
   client.setInsecure(); // simplifica el proyecto; para producción, validar certificado
+  client.setTimeout(15000);
 
   HTTPClient http;
   String url = "https://firebasestorage.googleapis.com/v0/b/" +
@@ -155,6 +210,7 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
 
   http.begin(client, url);
   http.addHeader("Content-Type", "image/jpeg");
+  http.addHeader("Authorization", "Firebase " + idToken);
 
   int httpCode = http.POST(fb->buf, fb->len);
 
@@ -180,7 +236,9 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl) {
   client.setInsecure();
 
   HTTPClient http;
-  String url = "https://" + String(FIREBASE_DATABASE_URL) + "/alarmas.json";
+  String url = "https://" + String(FIREBASE_DATABASE_URL) +
+               "/alarmas/" + String(ALARMA_ID) + "/historial.json" +
+               "?auth=" + idToken;
 
   http.begin(client, url);
   http.addHeader("Content-Type", "application/json");
@@ -208,6 +266,13 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl) {
 
 // ==================== Lógica principal de alarma ====================
 void procesarAlarma(int sensorId) {
+  Serial.printf("Heap libre antes de procesar: %u bytes\n", ESP.getFreeHeap());
+
+  if (!autenticarDispositivo()) {
+    Serial.println("No se pudo autenticar, se cancela esta alarma.");
+    return;
+  }
+
   camera_fb_t* fb = tomarFoto();
   if (!fb) return;
 
