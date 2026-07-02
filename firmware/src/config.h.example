@@ -2,16 +2,23 @@
 #define CONFIG_H
 
 // ==================== WiFi ====================
-#define WIFI_SSID     "TU_WIFI_AQUI"
-#define WIFI_PASSWORD "TU_PASSWORD_AQUI"
+#define WIFI_SSID     "Personal-985-5GHz"
+#define WIFI_PASSWORD "F7C0F5F985"
 
 // ==================== Firebase ====================
-// Sacados del firebaseConfig que copiaste desde la consola de Firebase
+#define FIREBASE_API_KEY        "AIzaSyCwpDqIEPkD89iA5MsEpnqNBXemJ1aqeTo"
 #define FIREBASE_DATABASE_URL   "alarma-esp32-abc0c-default-rtdb.firebaseio.com"
 #define FIREBASE_STORAGE_BUCKET "alarma-esp32-abc0c.firebasestorage.app"
 
+// Cuenta del dispositivo y alarma a la que pertenece
+#define FIREBASE_DEVICE_EMAIL    "dispositivo@alarma001.local"
+#define FIREBASE_DEVICE_PASSWORD "micro"
+#define ALARMA_ID                "Alarma1"
+
 // ==================== Pines ====================
-#define PIR1_PIN 13   // Sensor PIR 1
-#define PIR2_PIN 14   // Sensor PIR 2
+#define PIR1_PIN 13
+#define PIR2_PIN 14
 
 #endif
+	
+
