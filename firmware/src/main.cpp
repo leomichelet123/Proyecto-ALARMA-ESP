@@ -107,41 +107,52 @@ void conectarWiFi() {
 // Usa la cuenta creada en Authentication para obtener un token que permite
 // escribir en la base de datos y en Storage, según las reglas de seguridad.
 bool autenticarDispositivo() {
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
   String url = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + String(FIREBASE_API_KEY);
-
-  http.begin(client, url);
-  http.addHeader("Content-Type", "application/json");
-
   String body = "{\"email\":\"" + String(FIREBASE_DEVICE_EMAIL) +
                 "\",\"password\":\"" + String(FIREBASE_DEVICE_PASSWORD) +
                 "\",\"returnSecureToken\":true}";
 
-  int httpCode = http.POST(body);
-  bool ok = false;
+  for (int intento = 1; intento <= 3; intento++) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(10000);
 
-  if (httpCode == 200) {
-    String respuesta = http.getString();
-    DynamicJsonDocument doc(4096);
-    DeserializationError error = deserializeJson(doc, respuesta);
+    HTTPClient http;
+    http.begin(client, url);
+    http.addHeader("Content-Type", "application/json");
 
-    if (!error && doc.containsKey("idToken")) {
-      idToken = doc["idToken"].as<String>();
-      ok = true;
-      Serial.println("Autenticado como dispositivo correctamente.");
-    } else {
-      Serial.println("No se pudo leer el token de la respuesta.");
+    int httpCode = http.POST(body);
+
+    if (httpCode == 200) {
+      String respuesta = http.getString();
+      http.end();
+
+      DynamicJsonDocument doc(4096);
+      DeserializationError error = deserializeJson(doc, respuesta);
+
+      if (!error && doc.containsKey("idToken")) {
+        idToken = doc["idToken"].as<String>();
+        Serial.println("Autenticado como dispositivo correctamente.");
+        return true;
+      } else {
+        Serial.println("No se pudo leer el token de la respuesta.");
+        return false;
+      }
     }
-  } else {
-    Serial.printf("Error al autenticar el dispositivo. Código HTTP: %d\n", httpCode);
-    Serial.println(http.getString());
+
+    Serial.printf("Intento %d/3 fallido al autenticar. Código HTTP: %d\n", intento, httpCode);
+    if (httpCode > 0) {
+      Serial.println(http.getString());
+    }
+    http.end();
+    client.stop();
+
+    if (intento < 3) {
+      delay(4000);
+    }
   }
 
-  http.end();
-  return ok;
+  return false;
 }
 
 
@@ -267,6 +278,7 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl) {
 // ==================== Lógica principal de alarma ====================
 void procesarAlarma(int sensorId) {
   Serial.printf("Heap libre antes de procesar: %u bytes\n", ESP.getFreeHeap());
+  Serial.printf("Señal WiFi (RSSI): %d dBm\n", WiFi.RSSI());
 
   if (!autenticarDispositivo()) {
     Serial.println("No se pudo autenticar, se cancela esta alarma.");
