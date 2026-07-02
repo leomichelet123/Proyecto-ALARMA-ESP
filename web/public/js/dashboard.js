@@ -1,5 +1,10 @@
 let alarmaId = null;
 let miUid = null;
+let tieneErrorUsuarios = false;
+let tieneErrorHistorial = false;
+
+const connectionStatus = document.getElementById('connection-status');
+const syncAlert = document.getElementById('sync-alert');
 
 // ---------- Protección de ruta + resolver a qué alarma pertenezco ----------
 auth.onAuthStateChanged(async (user) => {
@@ -28,6 +33,12 @@ document.getElementById('btn-logout').addEventListener('click', () => {
   auth.signOut().then(() => {
     window.location.href = 'index.html';
   });
+});
+
+db.ref('.info/connected').on('value', (snapshot) => {
+  const conectado = snapshot.val() === true;
+  connectionStatus.className = `status-pill ${conectado ? 'status-ok' : 'status-error'}`;
+  connectionStatus.textContent = conectado ? 'En linea' : 'Sin conexion';
 });
 
 // ---------- Utilidades ----------
@@ -66,7 +77,8 @@ function actualizarEstadoSensor(sensorId, ultimoTimestamp) {
   const status = document.getElementById(`status-sensor-${sensorId}`);
 
   if (!ultimoTimestamp) {
-    status.textContent = 'Sin datos aún';
+    status.textContent = 'Pendiente de configurar ESP32-CAM';
+    dot.classList.remove('alert');
     return;
   }
 
@@ -75,6 +87,21 @@ function actualizarEstadoSensor(sensorId, ultimoTimestamp) {
 
   dot.classList.toggle('alert', esReciente);
   status.textContent = `Última alarma: ${tiempoRelativo(ultimoTimestamp)}`;
+}
+
+function actualizarSyncAlert() {
+  if (!tieneErrorUsuarios && !tieneErrorHistorial) {
+    syncAlert.style.display = 'none';
+    syncAlert.textContent = '';
+    return;
+  }
+
+  const mensajes = [];
+  if (tieneErrorUsuarios) mensajes.push('usuarios');
+  if (tieneErrorHistorial) mensajes.push('historial');
+
+  syncAlert.style.display = 'block';
+  syncAlert.textContent = `No se pudo sincronizar: ${mensajes.join(' y ')}. Se reintentara automaticamente.`;
 }
 
 // ---------- Escuchas en tiempo real (una vez que sabemos la alarmaId) ----------
@@ -87,6 +114,9 @@ function escucharUsuarios() {
   const usersList = document.getElementById('users-list');
 
   db.ref('alarmas/' + alarmaId + '/usuarios').on('value', (snapshot) => {
+    tieneErrorUsuarios = false;
+    actualizarSyncAlert();
+
     const data = snapshot.val() || {};
     usersList.innerHTML = '';
 
@@ -119,6 +149,9 @@ function escucharUsuarios() {
 
       usersList.appendChild(item);
     });
+  }, () => {
+    tieneErrorUsuarios = true;
+    actualizarSyncAlert();
   });
 }
 
@@ -131,6 +164,9 @@ function escucharHistorial() {
     .limitToLast(100);
 
   alarmasRef.on('value', (snapshot) => {
+    tieneErrorHistorial = false;
+    actualizarSyncAlert();
+
     const data = snapshot.val();
     historyList.innerHTML = '';
 
@@ -179,5 +215,8 @@ function escucharHistorial() {
 
       historyList.appendChild(item);
     });
+  }, () => {
+    tieneErrorHistorial = true;
+    actualizarSyncAlert();
   });
 }

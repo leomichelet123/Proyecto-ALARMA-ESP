@@ -52,22 +52,24 @@ form.addEventListener('submit', (e) => {
     });
 });
 
-btnRegistro.addEventListener('click', () => {
-  ocultarError();
+if (btnRegistro) {
+  btnRegistro.addEventListener('click', () => {
+    ocultarError();
 
-  const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
 
-  if (!email || !password) {
-    mostrarError('Completá correo y contraseña para crear la cuenta.');
-    return;
-  }
+    if (!email || !password) {
+      mostrarError('Completá correo y contraseña para crear la cuenta.');
+      return;
+    }
 
-  auth.createUserWithEmailAndPassword(email, password)
-    .then(() => {
-      window.location.href = 'dashboard.html';
-    })
-    .catch((err) => {
-      mostrarError(traducirError(err.code));
-    });
-});
+    auth.createUserWithEmailAndPassword(email, password)
+      .then(() => {
+        window.location.href = 'dashboard.html';
+      })
+      .catch((err) => {
+        mostrarError(traducirError(err.code));
+      });
+  });
+}

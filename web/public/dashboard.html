@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Alarma ESP32 · Panel</title>
+  <title>AlarmaMB ESP32 · Panel</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -11,29 +11,32 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="pulse-dot" id="pulse-general"></span>
-      <span class="topbar-title">Panel de Alarma</span>
+      <span class="topbar-title">Panel AlarmaMB ESP32</span>
     </div>
     <div class="topbar-user">
+      <span class="status-pill status-pending" id="connection-status">Conectando...</span>
       <span id="user-email"></span>
       <button class="link-btn" id="btn-logout">Cerrar sesión</button>
     </div>
   </div>
 
   <main>
+    <div class="sync-alert" id="sync-alert" style="display:none;"></div>
+
     <div class="section-title">Sensores</div>
     <div class="sensor-row">
       <div class="sensor-card">
         <span class="pulse-dot" id="dot-sensor-1"></span>
         <div class="sensor-info">
           <div class="sensor-name">Sensor 1 · PIR</div>
-          <div class="sensor-status" id="status-sensor-1">Sin datos aún</div>
+          <div class="sensor-status" id="status-sensor-1">Pendiente de configurar ESP32-CAM</div>
         </div>
       </div>
       <div class="sensor-card">
         <span class="pulse-dot" id="dot-sensor-2"></span>
         <div class="sensor-info">
           <div class="sensor-name">Sensor 2 · PIR</div>
-          <div class="sensor-status" id="status-sensor-2">Sin datos aún</div>
+          <div class="sensor-status" id="status-sensor-2">Pendiente de configurar ESP32-CAM</div>
         </div>
       </div>
     </div>
@@ -49,8 +52,8 @@
     </div>
 
     <div class="empty-state" id="empty-state" style="display:none;">
-      <div class="empty-state-title">Todavía no hay alarmas registradas</div>
-      <p>Cuando un sensor detecte movimiento, va a aparecer acá con foto y hora.</p>
+      <div class="empty-state-title">Sistema en preparacion</div>
+      <p>Cuando el ESP32-CAM quede configurado y detecte movimiento, aca se mostraran los eventos con foto y hora.</p>
     </div>
   </main>
 
