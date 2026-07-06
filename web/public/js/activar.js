@@ -4,6 +4,14 @@ const errorMsg = document.getElementById('error-msg');
 
 const MAX_USUARIOS = 4;
 
+async function asegurarPersistenciaLocal() {
+  try {
+    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+  } catch (e) {
+    console.error('No se pudo fijar persistencia LOCAL:', e);
+  }
+}
+
 function mostrarError(mensaje) {
   errorMsg.textContent = mensaje;
   errorMsg.style.display = 'block';
@@ -28,8 +36,14 @@ form.addEventListener('submit', async (e) => {
 
   const codigo = document.getElementById('codigo').value.trim().toUpperCase();
   const nombre = document.getElementById('nombre').value.trim();
+  const apellido = document.getElementById('apellido').value.trim();
   const email = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
+
+  if (!nombre || !apellido) {
+    mostrarError('Ingresá tu nombre y apellido.');
+    return;
+  }
 
   btnActivar.disabled = true;
   btnActivar.textContent = 'Verificando...';
@@ -37,6 +51,8 @@ form.addEventListener('submit', async (e) => {
   let userCredential;
 
   try {
+    await asegurarPersistenciaLocal();
+
     // 1) Crear la cuenta (esto deja al usuario autenticado, necesario
     //    para poder leer /codigosActivacion con las reglas de seguridad)
     userCredential = await auth.createUserWithEmailAndPassword(email, password);
@@ -63,6 +79,7 @@ form.addEventListener('submit', async (e) => {
     // 4) Registrar al usuario dentro de la alarma
     await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).set({
       nombre: nombre,
+      apellido: apellido,
       email: email,
       fechaAlta: firebase.database.ServerValue.TIMESTAMP
     });

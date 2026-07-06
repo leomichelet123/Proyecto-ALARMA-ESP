@@ -6,6 +6,51 @@ let tieneErrorHistorial = false;
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
 
+function nombreDesdeUsuario(user) {
+  const fromDisplay = (user.displayName || '').trim();
+  if (fromDisplay) return fromDisplay;
+  const fromEmail = (user.email || '').split('@')[0].replace(/[._-]+/g, ' ').trim();
+  return fromEmail || 'Usuario';
+}
+
+async function intentarRecuperarAlarmaPorEmail(user) {
+  if (!user || !user.email) return null;
+
+  const alarmasSnap = await db.ref('alarmas').once('value');
+  const alarmas = alarmasSnap.val() || {};
+
+  for (const [id, alarma] of Object.entries(alarmas)) {
+    const usuarios = (alarma && alarma.usuarios) ? alarma.usuarios : {};
+    const yaEstaPorUid = !!usuarios[user.uid];
+    let encontradoPorEmail = false;
+
+    for (const u of Object.values(usuarios)) {
+      if (u && typeof u === 'object' && (u.email || '').toLowerCase() === user.email.toLowerCase()) {
+        encontradoPorEmail = true;
+        break;
+      }
+    }
+
+    if (yaEstaPorUid || encontradoPorEmail) {
+      // Reestablece mapeo del usuario actual a su alarma.
+      await db.ref('userAlarma/' + user.uid).set(id);
+
+      // Si no existe su nodo por UID actual, lo crea con datos mínimos válidos.
+      if (!yaEstaPorUid) {
+        await db.ref('alarmas/' + id + '/usuarios/' + user.uid).set({
+          nombre: nombreDesdeUsuario(user),
+          email: user.email,
+          fechaAlta: firebase.database.ServerValue.TIMESTAMP
+        });
+      }
+
+      return id;
+    }
+  }
+
+  return null;
+}
+
 // ---------- Protección de ruta + resolver a qué alarma pertenezco ----------
 auth.onAuthStateChanged(async (user) => {
   if (!user) {
@@ -13,20 +58,39 @@ auth.onAuthStateChanged(async (user) => {
     return;
   }
 
-  miUid = user.uid;
-  document.getElementById('user-email').textContent = user.email;
+  try {
+    miUid = user.uid;
+    document.getElementById('user-email').textContent = user.email || '';
 
-  const snap = await db.ref('userAlarma/' + user.uid).once('value');
-  alarmaId = snap.val();
+    const snap = await db.ref('userAlarma/' + user.uid).once('value');
+    alarmaId = snap.val();
 
-  if (!alarmaId) {
-    // Cuenta sin alarma asignada (no debería pasar en uso normal)
-    await auth.signOut();
-    window.location.href = 'index.html';
-    return;
+    if (!alarmaId) {
+      // Intento de autocorreccion: recuperar membresia por email si cambio el UID.
+      alarmaId = await intentarRecuperarAlarmaPorEmail(user);
+      if (!alarmaId) {
+        // Mantener sesion activa y mostrar mensaje en vez de redirigir.
+        syncAlert.style.display = 'block';
+        syncAlert.textContent = 'Tu cuenta no esta vinculada a ninguna alarma. Entra a Activar para asociarla con un codigo.';
+
+        const usersList = document.getElementById('users-list');
+        const historyList = document.getElementById('history-list');
+        const emptyState = document.getElementById('empty-state');
+        usersList.innerHTML = '';
+        historyList.innerHTML = '';
+        emptyState.style.display = 'block';
+        document.getElementById('status-sensor-1').textContent = 'Cuenta sin alarma vinculada';
+        document.getElementById('status-sensor-2').textContent = 'Cuenta sin alarma vinculada';
+        return;
+      }
+    }
+
+    iniciarEscuchas();
+  } catch (err) {
+    console.error('Error inicializando dashboard:', err);
+    syncAlert.style.display = 'block';
+    syncAlert.textContent = 'Error al cargar tus datos de alarma. Recarga la pagina o volve a iniciar sesion.';
   }
-
-  iniciarEscuchas();
 });
 
 document.getElementById('btn-logout').addEventListener('click', () => {
@@ -121,6 +185,10 @@ function escucharUsuarios() {
     usersList.innerHTML = '';
 
     Object.entries(data).forEach(([uid, u]) => {
+      const usuario = (u && typeof u === 'object') ? u : {};
+      const nombre = usuario.nombre || usuario.displayName || `Usuario ${uid.slice(0, 6)}`;
+      const email = usuario.email || uid;
+
       const item = document.createElement('div');
       item.className = 'history-item';
       item.style.gridTemplateColumns = '1fr auto';
@@ -129,8 +197,8 @@ function escucharUsuarios() {
 
       item.innerHTML = `
         <div>
-          <div class="history-sensor">${u.nombre}${esUnoMismo ? ' (vos)' : ''}</div>
-          <div class="history-time">${u.email}</div>
+          <div class="history-sensor">${nombre}${esUnoMismo ? ' (vos)' : ''}</div>
+          <div class="history-time">${email}</div>
         </div>
       `;
 
@@ -140,7 +208,7 @@ function escucharUsuarios() {
         btnEliminar.className = 'link-btn';
         btnEliminar.style.color = 'var(--alert)';
         btnEliminar.addEventListener('click', () => {
-          if (confirm(`¿Quitar a ${u.nombre} de esta alarma?`)) {
+          if (confirm(`¿Quitar a ${nombre} de esta alarma?`)) {
             db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove();
           }
         });
@@ -179,7 +247,16 @@ function escucharHistorial() {
 
     emptyState.style.display = 'none';
 
-    const alarmas = Object.values(data).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    const alarmas = Object.values(data)
+      .filter((a) => a && typeof a === 'object' && a.sensor !== undefined)
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    if (alarmas.length === 0) {
+      emptyState.style.display = 'block';
+      actualizarEstadoSensor(1, null);
+      actualizarEstadoSensor(2, null);
+      return;
+    }
 
     const ultimaPorSensor = {};
     alarmas.forEach((alarma) => {

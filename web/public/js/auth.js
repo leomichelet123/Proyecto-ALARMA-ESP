@@ -12,6 +12,14 @@ function ocultarError() {
   errorMsg.style.display = 'none';
 }
 
+async function asegurarPersistenciaLocal() {
+  try {
+    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+  } catch (e) {
+    console.error('No se pudo fijar persistencia LOCAL:', e);
+  }
+}
+
 function traducirError(codigo) {
   const mensajes = {
     'auth/invalid-email': 'El correo electrónico no es válido.',
@@ -41,7 +49,7 @@ form.addEventListener('submit', (e) => {
   btnLogin.disabled = true;
   btnLogin.textContent = 'Ingresando...';
 
-  auth.signInWithEmailAndPassword(email, password)
+  asegurarPersistenciaLocal().then(() => auth.signInWithEmailAndPassword(email, password))
     .then(() => {
       window.location.href = 'dashboard.html';
     })
@@ -64,7 +72,7 @@ if (btnRegistro) {
       return;
     }
 
-    auth.createUserWithEmailAndPassword(email, password)
+    asegurarPersistenciaLocal().then(() => auth.createUserWithEmailAndPassword(email, password))
       .then(() => {
         window.location.href = 'dashboard.html';
       })
