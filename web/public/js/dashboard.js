@@ -74,8 +74,9 @@ function nombreDesdeUsuario(user) {
 async function intentarRecuperarAlarmaPorEmail(user) {
   if (!user || !user.email) return null;
 
-  const alarmasSnap = await db.ref('alarmas').once('value');
-  const alarmas = alarmasSnap.val() || {};
+  try {
+    const alarmasSnap = await db.ref('alarmas').once('value');
+    const alarmas = alarmasSnap.val() || {};
 
   for (const [id, alarma] of Object.entries(alarmas)) {
     const usuarios = (alarma && alarma.usuarios) ? alarma.usuarios : {};
@@ -104,6 +105,9 @@ async function intentarRecuperarAlarmaPorEmail(user) {
 
       return id;
     }
+  }
+  } catch (e) {
+    console.warn('Recuperación por email no disponible:', e.message);
   }
 
   return null;
