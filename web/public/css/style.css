@@ -429,3 +429,26 @@ main {
   .history-item .badge { grid-column: 1 / -1; justify-self: start; }
   .history-thumb { width: 48px; height: 48px; }
 }
+
+/* ---------- Banner de alarma activada ---------- */
+.alarm-banner {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  background: var(--alert);
+  color: #fff;
+  padding: 14px 20px;
+  font-weight: 700;
+  font-size: 1.1rem;
+  text-align: center;
+  letter-spacing: 0.04em;
+  animation: pulse-banner 1s ease-in-out infinite alternate;
+  cursor: pointer;
+}
+.alarm-banner.visible { display: block; }
+
+@keyframes pulse-banner {
+  from { background: #ff4136; }
+  to   { background: #c0392b; }
+}

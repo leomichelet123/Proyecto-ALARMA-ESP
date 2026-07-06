@@ -2,9 +2,67 @@ let alarmaId = null;
 let miUid = null;
 let tieneErrorUsuarios = false;
 let tieneErrorHistorial = false;
+let ultimoTimestampVisto = null;
 
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
+const alarmBanner = document.getElementById('alarm-banner');
+
+// ---------- Notificaciones ----------
+function cerrarBanner() {
+  alarmBanner.classList.remove('visible');
+}
+
+function mostrarBanner() {
+  alarmBanner.classList.add('visible');
+  // Vibrar si es móvil
+  if (navigator.vibrate) navigator.vibrate([400, 100, 400, 100, 400]);
+  // Sonido de alarma
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.3, 0.6].forEach((delay) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.25);
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.25);
+    });
+  } catch (e) { /* navegador no soporta AudioContext */ }
+}
+
+async function iniciarNotificacionesPush() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
+
+  let permiso = Notification.permission;
+  if (permiso === 'default') {
+    permiso = await Notification.requestPermission();
+  }
+  if (permiso !== 'granted') return;
+
+  try {
+    const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const messaging = firebase.messaging();
+    // VAPID key pública del proyecto (se obtiene en Firebase Console > Cloud Messaging)
+    const token = await messaging.getToken({
+      vapidKey: 'BLBz2zQKq0Kj7Hf9Xk3mN8vYpRtWsUeA1iC4dGjOlM5nPqVxZbDwEhFuIsJyTr6',
+      serviceWorkerRegistration: registration
+    });
+    if (token && miUid && alarmaId) {
+      await db.ref('alarmas/' + alarmaId + '/fcmTokens/' + miUid).set(token);
+    }
+    // Notificación cuando la app está en primer plano
+    messaging.onMessage(() => {
+      mostrarBanner();
+    });
+  } catch (e) {
+    console.warn('FCM no disponible:', e.message);
+  }
+}
 
 function nombreDesdeUsuario(user) {
   const fromDisplay = (user.displayName || '').trim();
@@ -86,6 +144,7 @@ auth.onAuthStateChanged(async (user) => {
     }
 
     iniciarEscuchas();
+    iniciarNotificacionesPush();
   } catch (err) {
     console.error('Error inicializando dashboard:', err);
     syncAlert.style.display = 'block';
@@ -269,6 +328,21 @@ function escucharHistorial() {
       actualizarEstadoSensor(2, null);
       return;
     }
+
+    // Detectar si hay un evento nuevo (más reciente que el último visto)
+    const masReciente = alarmas[0].timestamp || 0;
+    if (ultimoTimestampVisto !== null && masReciente > ultimoTimestampVisto) {
+      mostrarBanner();
+      // Notificación nativa del navegador (si la página está en segundo plano)
+      if (Notification.permission === 'granted') {
+        new Notification('🚨 ALARMA ACTIVADA', {
+          body: `Movimiento detectado — Sensor ${alarmas[0].sensor}`,
+          icon: '/icon-192.png',
+          requireInteraction: true
+        });
+      }
+    }
+    ultimoTimestampVisto = masReciente;
 
     const ultimaPorSensor = {};
     alarmas.forEach((alarma) => {

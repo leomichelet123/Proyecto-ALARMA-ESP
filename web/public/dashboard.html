@@ -8,6 +8,11 @@
 </head>
 <body>
 
+  <!-- Banner de alarma activada (visible sobre todo cuando se dispara) -->
+  <div class="alarm-banner" id="alarm-banner" onclick="cerrarBanner()">
+    🚨 ALARMA ACTIVADA — Hacé click para ver el detalle
+  </div>
+
   <div class="topbar">
     <div class="topbar-left">
       <span class="pulse-dot" id="pulse-general"></span>
@@ -64,6 +69,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js"></script>
   <script src="js/firebase-config.js"></script>
   <script src="js/dashboard.js"></script>
 </body>
