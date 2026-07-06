@@ -184,9 +184,21 @@ function escucharUsuarios() {
     const data = snapshot.val() || {};
     usersList.innerHTML = '';
 
+    const total = Object.keys(data).length;
+    const tituloUsuarios = document.querySelector('.section-title');
+    // Actualiza el título con el contador
+    const allTitles = document.querySelectorAll('.section-title');
+    allTitles.forEach(t => {
+      if (t.textContent.startsWith('Usuarios')) {
+        t.textContent = `Usuarios de esta alarma (${total}/4)`;
+      }
+    });
+
     Object.entries(data).forEach(([uid, u]) => {
       const usuario = (u && typeof u === 'object') ? u : {};
       const nombre = usuario.nombre || usuario.displayName || `Usuario ${uid.slice(0, 6)}`;
+      const apellido = usuario.apellido || '';
+      const nombreCompleto = apellido ? `${nombre} ${apellido}` : nombre;
       const email = usuario.email || uid;
 
       const item = document.createElement('div');
@@ -197,7 +209,7 @@ function escucharUsuarios() {
 
       item.innerHTML = `
         <div>
-          <div class="history-sensor">${nombre}${esUnoMismo ? ' (vos)' : ''}</div>
+          <div class="history-sensor">${nombreCompleto}${esUnoMismo ? ' (vos)' : ''}</div>
           <div class="history-time">${email}</div>
         </div>
       `;
