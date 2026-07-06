@@ -1,8 +1,27 @@
 const form = document.getElementById('form-activar');
 const btnActivar = document.getElementById('btn-activar');
 const errorMsg = document.getElementById('error-msg');
+const camposCuenta = document.getElementById('campos-cuenta');
 
 const MAX_USUARIOS = 4;
+let usuarioYaLogueado = null;
+
+// Si el usuario ya tiene sesión, ocultar campos de email/password
+auth.onAuthStateChanged((user) => {
+  if (user) {
+    usuarioYaLogueado = user;
+    camposCuenta.style.display = 'none';
+    document.getElementById('email').removeAttribute('required');
+    document.getElementById('password').removeAttribute('required');
+    btnActivar.textContent = 'Vincular cuenta a esta alarma';
+  } else {
+    usuarioYaLogueado = null;
+    camposCuenta.style.display = 'block';
+    document.getElementById('email').setAttribute('required', '');
+    document.getElementById('password').setAttribute('required', '');
+    btnActivar.textContent = 'Activar y crear cuenta';
+  }
+});
 
 async function asegurarPersistenciaLocal() {
   try {
@@ -53,10 +72,27 @@ form.addEventListener('submit', async (e) => {
   try {
     await asegurarPersistenciaLocal();
 
-    // 1) Crear la cuenta (esto deja al usuario autenticado, necesario
-    //    para poder leer /codigosActivacion con las reglas de seguridad)
-    userCredential = await auth.createUserWithEmailAndPassword(email, password);
-    const uid = userCredential.user.uid;
+    let uid;
+    let emailFinal;
+
+    if (usuarioYaLogueado) {
+      // Usuario ya logueado: usar su cuenta existente
+      uid = usuarioYaLogueado.uid;
+      emailFinal = usuarioYaLogueado.email;
+    } else {
+      // Usuario nuevo: crear cuenta
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      if (!email || !password) {
+        mostrarError('Completá correo y contraseña.');
+        btnActivar.disabled = false;
+        btnActivar.textContent = 'Activar y crear cuenta';
+        return;
+      }
+      userCredential = await auth.createUserWithEmailAndPassword(email, password);
+      uid = userCredential.user.uid;
+      emailFinal = email;
+    }
 
     // 2) Validar el código de activación
     const codigoSnap = await db.ref('codigosActivacion/' + codigo).once('value');
@@ -80,7 +116,7 @@ form.addEventListener('submit', async (e) => {
     await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).set({
       nombre: nombre,
       apellido: apellido,
-      email: email,
+      email: emailFinal,
       fechaAlta: firebase.database.ServerValue.TIMESTAMP
     });
 
