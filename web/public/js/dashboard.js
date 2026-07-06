@@ -148,12 +148,14 @@ auth.onAuthStateChanged(async (user) => {
     }
 
     iniciarEscuchas();
-    iniciarNotificacionesPush();
   } catch (err) {
     console.error('Error inicializando dashboard:', err);
     syncAlert.style.display = 'block';
-    syncAlert.textContent = 'Error al cargar tus datos de alarma. Recarga la pagina o volve a iniciar sesion.';
+    syncAlert.textContent = 'Error: ' + (err.message || err.code || JSON.stringify(err));
+    return;
   }
+  // Notificaciones fuera del bloque crítico para que no afecten el dashboard
+  iniciarNotificacionesPush();
 });
 
 document.getElementById('btn-logout').addEventListener('click', () => {
