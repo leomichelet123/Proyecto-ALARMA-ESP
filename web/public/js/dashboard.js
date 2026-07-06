@@ -71,7 +71,7 @@ auth.onAuthStateChanged(async (user) => {
       if (!alarmaId) {
         // Mantener sesion activa y mostrar mensaje en vez de redirigir.
         syncAlert.style.display = 'block';
-        syncAlert.textContent = 'Tu cuenta no esta vinculada a ninguna alarma. Entra a Activar para asociarla con un codigo.';
+        syncAlert.innerHTML = 'Tu cuenta no está vinculada a ninguna alarma. <a href="activar.html" style="color:inherit;font-weight:bold;text-decoration:underline;">Ingresá tu código de activación acá</a>.';
 
         const usersList = document.getElementById('users-list');
         const historyList = document.getElementById('history-list');

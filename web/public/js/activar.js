@@ -87,9 +87,6 @@ form.addEventListener('submit', async (e) => {
     // 5) Guardar el mapeo para saber a qué alarma pertenece este usuario
     await db.ref('userAlarma/' + uid).set(alarmaId);
 
-    // 6) Invalidar el código para que no pueda volver a usarse
-    await db.ref('codigosActivacion/' + codigo + '/activo').set(false);
-
     window.location.href = 'dashboard.html';
 
   } catch (err) {
