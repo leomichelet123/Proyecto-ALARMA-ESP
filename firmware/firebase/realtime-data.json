@@ -1,0 +1,24 @@
+{
+  "alarmas": {
+    "alarma001": {
+      "dispositivoUID": "1YL06CX9x7RZ07DrPGm2CMj1ndf2",
+      "usuarios": {
+        "1YL06CX9x7RZ07DrPGm2CMj1ndf2": true,
+        "ysb01vLHchX9zxrHLaBYmIvNwTJ3": true
+      },
+      "historial": {
+        "init": true
+      }
+    }
+  },
+  "codigosActivacion": {
+    "ABC123XY": {
+      "activo": true,
+      "alarmaId": "alarma001"
+    }
+  },
+  "userAlarma": {
+    "1YL06CX9x7RZ07DrPGm2CMj1ndf2": "alarma001",
+    "ysb01vLHchX9zxrHLaBYmIvNwTJ3": "alarma001"
+  }
+}

@@ -244,6 +244,24 @@ camera_fb_t* tomarFoto() {
   return fb;
 }
 
+// ==================== Encoding para Storage ====================
+String codificarNombreObjetoStorage(const String& nombreArchivo) {
+  String resultado = "";
+  for (int i = 0; i < nombreArchivo.length(); i++) {
+    char c = nombreArchivo[i];
+    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || 
+        c == '-' || c == '_' || c == '.' || c == '~') {
+      resultado += c;
+    } else {
+      // URL encode: %HH
+      char hex[4];
+      snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
+      resultado += hex;
+    }
+  }
+  return resultado;
+}
+
 // ==================== Firebase Storage ====================
 // Sube la foto usando la REST API de Firebase Storage (Google Cloud Storage JSON API)
 String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
@@ -252,7 +270,7 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
   client.setTimeout(15000);
 
   HTTPClient http;
-  String encodedName = codificarNombreObjetoStorage(storagePath);
+  String encodedName = codificarNombreObjetoStorage(nombreArchivo);
   String url = "https://firebasestorage.googleapis.com/v0/b/" +
                String(FIREBASE_STORAGE_BUCKET) +
                "/o?uploadType=media&name=" + encodedName;
@@ -286,8 +304,6 @@ bool postJsonEnDatabase(const String& url, const String& body, const String& eti
   client.setInsecure();
 
   HTTPClient http;
-  String url = "https://" + String(FIREBASE_DATABASE_URL) + "/alarmas.json";
-
   http.begin(client, url);
   http.addHeader("Content-Type", "application/json");
 

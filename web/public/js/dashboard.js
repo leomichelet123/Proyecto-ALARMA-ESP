@@ -1,5 +1,6 @@
 let alarmaId = null;
 let miUid = null;
+let adminUid = null;
 let tieneErrorUsuarios = false;
 let tieneErrorHistorial = false;
 let ultimoTimestampVisto = null;
@@ -154,9 +155,15 @@ auth.onAuthStateChanged(async (user) => {
     syncAlert.textContent = 'Error: ' + (err.message || err.code || JSON.stringify(err));
     return;
   }
-  // Notificaciones fuera del bloque crítico para que no afecten el dashboard
   iniciarNotificacionesPush();
+  cargarAdminUid();
 });
+
+// Cargar adminUid cuando alarmaId esté disponible
+async function cargarAdminUid() {
+  const snap = await db.ref('alarmas/' + alarmaId + '/adminUid').once('value');
+  adminUid = snap.val();
+}
 
 document.getElementById('btn-logout').addEventListener('click', () => {
   auth.signOut().then(() => {
@@ -279,7 +286,7 @@ function escucharUsuarios() {
         </div>
       `;
 
-      if (!esUnoMismo) {
+      if (!esUnoMismo && miUid === adminUid) {
         const btnEliminar = document.createElement('button');
         btnEliminar.textContent = 'Eliminar';
         btnEliminar.className = 'link-btn';
@@ -287,6 +294,7 @@ function escucharUsuarios() {
         btnEliminar.addEventListener('click', () => {
           if (confirm(`¿Quitar a ${nombre} de esta alarma?`)) {
             db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove();
+            db.ref('userAlarma/' + uid).remove();
           }
         });
         item.appendChild(btnEliminar);

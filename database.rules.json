@@ -12,11 +12,15 @@
     },
     "alarmas": {
       "$alarmaId": {
+        "adminUid": {
+          ".read": "auth != null && root.child('userAlarma').child(auth.uid).val() === $alarmaId",
+          ".write": "auth != null && root.child('userAlarma').child(auth.uid).val() === $alarmaId && !data.exists()"
+        },
         "usuarios": {
           ".read": "auth != null",
           ".write": false,
           "$uid": {
-            ".write": "auth != null && (auth.uid === $uid || root.child('userAlarma').child(auth.uid).val() === $alarmaId)"
+            ".write": "auth != null && (auth.uid === $uid || root.child('alarmas').child($alarmaId).child('adminUid').val() === auth.uid)"
           }
         },
         "dispositivoUid": {

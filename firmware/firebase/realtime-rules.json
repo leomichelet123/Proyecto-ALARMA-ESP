@@ -1,0 +1,35 @@
+{
+  "rules": {
+    "codigosActivacion": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "userAlarma": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid && !data.exists()"
+      }
+    },
+    "alarmas": {
+      "$alarmaId": {
+        "usuarios": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && (auth.uid === $uid || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists())"
+          }
+        },
+        "dispositivoUID": {
+          ".read": "auth != null && root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists()",
+          ".write": false
+        },
+        "historial": {
+          ".read": "auth != null && root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists()",
+          "$eventoId": {
+            ".write": "!data.exists()",
+            ".validate": "newData.hasChildren(['sensor','timestamp','photoUrl'])"
+          }
+        }
+      }
+    }
+  }
+}
