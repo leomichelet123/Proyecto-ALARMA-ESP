@@ -63,6 +63,7 @@ form.addEventListener('submit', (e) => {
   const password = document.getElementById('password').value;
 
   btnLogin.disabled = true;
+  btnLogin.classList.add('loading');
   btnLogin.textContent = 'Ingresando...';
 
   asegurarPersistenciaLocal().then(() => auth.signInWithEmailAndPassword(email, password))
@@ -71,7 +72,10 @@ form.addEventListener('submit', (e) => {
     })
     .catch((err) => {
       mostrarError(traducirError(err.code));
+      document.getElementById('email').value = '';
+      document.getElementById('password').value = '';
       btnLogin.disabled = false;
+      btnLogin.classList.remove('loading');
       btnLogin.textContent = 'Ingresar';
     });
 });
@@ -94,6 +98,8 @@ if (btnRegistro) {
       })
       .catch((err) => {
         mostrarError(traducirError(err.code));
+        document.getElementById('email').value = '';
+        document.getElementById('password').value = '';
       });
   });
 }

@@ -76,6 +76,7 @@ form.addEventListener('submit', async (e) => {
   }
 
   btnActivar.disabled = true;
+  btnActivar.classList.add('loading');
   btnActivar.textContent = 'Verificando...';
 
   let userCredential;
@@ -159,7 +160,13 @@ form.addEventListener('submit', async (e) => {
       mostrarError('Ocurrió un error. Intentá de nuevo.');
     }
 
+    document.getElementById('codigo').value = '';
+    if (!usuarioYaLogueado) {
+      document.getElementById('email').value = '';
+      document.getElementById('password').value = '';
+    }
     btnActivar.disabled = false;
+    btnActivar.classList.remove('loading');
     btnActivar.textContent = 'Activar y crear cuenta';
   }
 });

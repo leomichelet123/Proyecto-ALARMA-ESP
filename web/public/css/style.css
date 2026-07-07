@@ -139,6 +139,17 @@ button:hover {
 }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+@keyframes spinner {
+  to { transform: rotate(360deg); }
+}
+
+button.loading::before {
+  content: '⏳ ';
+  display: inline-block;
+  animation: spinner 1s linear infinite;
+  margin-right: 4px;
+}
+
 .btn-secondary {
   background: transparent;
   border: 1px solid var(--border);
