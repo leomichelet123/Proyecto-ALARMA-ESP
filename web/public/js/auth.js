@@ -39,6 +39,22 @@ auth.onAuthStateChanged((user) => {
   }
 });
 
+// Toggle show/hide password
+document.querySelectorAll('.btn-toggle-password').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const targetId = btn.getAttribute('data-target');
+    const input = document.getElementById(targetId);
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '🙈';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁️';
+    }
+  });
+});
+
 form.addEventListener('submit', (e) => {
   e.preventDefault();
   ocultarError();

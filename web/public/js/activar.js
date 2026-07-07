@@ -40,6 +40,10 @@ function ocultarError() {
   errorMsg.style.display = 'none';
 }
 
+function sanitizarNombre(texto) {
+  return texto.replace(/[^a-záéíóúñA-ZÁÉÍÓÚÑ\s]/g, '').trim();
+}
+
 function traducirError(codigo) {
   const mensajes = {
     'auth/invalid-email': 'El correo electrónico no es válido.',
@@ -54,13 +58,20 @@ form.addEventListener('submit', async (e) => {
   ocultarError();
 
   const codigo = document.getElementById('codigo').value.trim().toUpperCase();
-  const nombre = document.getElementById('nombre').value.trim();
-  const apellido = document.getElementById('apellido').value.trim();
+  const nombre = sanitizarNombre(document.getElementById('nombre').value);
+  const apellido = sanitizarNombre(document.getElementById('apellido').value);
   const email = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
 
   if (!nombre || !apellido) {
-    mostrarError('Ingresá tu nombre y apellido.');
+    mostrarError('Ingresá tu nombre y apellido (solo letras).');
+    return;
+  }
+
+  if (codigo !== 'ABC123XY') {
+    mostrarError('Código de activación inválido.');
+    btnActivar.disabled = false;
+    btnActivar.textContent = 'Activar y crear cuenta';
     return;
   }
 
@@ -120,7 +131,13 @@ form.addEventListener('submit', async (e) => {
       fechaAlta: firebase.database.ServerValue.TIMESTAMP
     });
 
-    // 5) Guardar el mapeo para saber a qué alarma pertenece este usuario
+    // 5) Si es el primer usuario, asignarlo como admin
+    const adminSnap = await db.ref('alarmas/' + alarmaId + '/adminUid').once('value');
+    if (!adminSnap.val()) {
+      await db.ref('alarmas/' + alarmaId + '/adminUid').set(uid);
+    }
+
+    // 6) Guardar el mapeo para saber a qué alarma pertenece este usuario
     await db.ref('userAlarma/' + uid).set(alarmaId);
 
     window.location.href = 'dashboard.html';
@@ -145,4 +162,20 @@ form.addEventListener('submit', async (e) => {
     btnActivar.disabled = false;
     btnActivar.textContent = 'Activar y crear cuenta';
   }
+});
+
+// Toggle show/hide password
+document.querySelectorAll('.btn-toggle-password').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const targetId = btn.getAttribute('data-target');
+    const input = document.getElementById(targetId);
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '🙈';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁️';
+    }
+  });
 });

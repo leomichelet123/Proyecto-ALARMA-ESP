@@ -22,7 +22,10 @@
         <input type="email" id="email" required autocomplete="email">
 
         <label for="password">Contraseña</label>
-        <input type="password" id="password" required autocomplete="current-password">
+        <div style="position: relative;">
+          <input type="password" id="password" required autocomplete="current-password" style="padding-right: 40px;">
+          <button type="button" class="btn-toggle-password" data-target="password" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 5px; color: var(--text-light);">👁️</button>
+        </div>
 
         <button type="submit" id="btn-login">Ingresar</button>
       </form>
