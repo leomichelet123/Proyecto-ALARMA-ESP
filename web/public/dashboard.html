@@ -30,20 +30,27 @@
   <main>
     <div class="sync-alert" id="sync-alert" style="display:none;"></div>
 
-    <div class="section-title">Sensores</div>
+    <div class="section-title">Estado del dispositivo</div>
     <div class="sensor-row">
       <div class="sensor-card">
-        <span class="pulse-dot" id="dot-sensor-1"></span>
+        <span class="pulse-dot" id="dot-camera"></span>
         <div class="sensor-info">
-          <div class="sensor-name">Sensor 1 · PIR</div>
-          <div class="sensor-status" id="status-sensor-1">Pendiente de configurar ESP32-CAM</div>
+          <div class="sensor-name">Camara</div>
+          <div class="sensor-status" id="status-camera">Sin conexion</div>
         </div>
       </div>
       <div class="sensor-card">
-        <span class="pulse-dot" id="dot-sensor-2"></span>
+        <span class="pulse-dot" id="dot-pir-1"></span>
+        <div class="sensor-info">
+          <div class="sensor-name">Sensor 1 · PIR</div>
+          <div class="sensor-status" id="status-pir-1">No conectado</div>
+        </div>
+      </div>
+      <div class="sensor-card">
+        <span class="pulse-dot" id="dot-pir-2"></span>
         <div class="sensor-info">
           <div class="sensor-name">Sensor 2 · PIR</div>
-          <div class="sensor-status" id="status-sensor-2">Pendiente de configurar ESP32-CAM</div>
+          <div class="sensor-status" id="status-pir-2">No conectado</div>
         </div>
       </div>
     </div>

@@ -4,10 +4,18 @@ let adminUid = null;
 let tieneErrorUsuarios = false;
 let tieneErrorHistorial = false;
 let ultimoTimestampVisto = null;
+let ultimaLimpiezaHuerfanosMs = 0;
+let puedeVerificarAuthPorEmail = null;
 
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
 const alarmBanner = document.getElementById('alarm-banner');
+const dotCamera = document.getElementById('dot-camera');
+const statusCamera = document.getElementById('status-camera');
+const dotPir1 = document.getElementById('dot-pir-1');
+const dotPir2 = document.getElementById('dot-pir-2');
+const statusPir1 = document.getElementById('status-pir-1');
+const statusPir2 = document.getElementById('status-pir-2');
 
 // ---------- Notificaciones ----------
 function cerrarBanner() {
@@ -95,8 +103,8 @@ async function intentarRecuperarAlarmaPorEmail(user) {
       // Reestablece mapeo del usuario actual a su alarma.
       await db.ref('userAlarma/' + user.uid).set(id);
 
-      // Si no existe su nodo por UID actual, lo crea con datos mínimos válidos.
-      if (!yaEstaPorUid) {
+      // Solo crear nodo por UID si no existe por UID NI por email.
+      if (!yaEstaPorUid && !encontradoPorEmail) {
         await db.ref('alarmas/' + id + '/usuarios/' + user.uid).set({
           nombre: nombreDesdeUsuario(user),
           email: user.email,
@@ -142,8 +150,7 @@ auth.onAuthStateChanged(async (user) => {
         usersList.innerHTML = '';
         historyList.innerHTML = '';
         emptyState.style.display = 'block';
-        document.getElementById('status-sensor-1').textContent = 'Cuenta sin alarma vinculada';
-        document.getElementById('status-sensor-2').textContent = 'Cuenta sin alarma vinculada';
+        actualizarEstadoDispositivoUI(null);
         return;
       }
     }
@@ -165,7 +172,34 @@ async function cargarAdminUid() {
   adminUid = snap.val();
 }
 
-document.getElementById('btn-logout').addEventListener('click', () => {
+async function liberarCupoAlCerrarSesion() {
+  if (!alarmaId || !miUid) return;
+
+  try {
+    const usuariosRef = db.ref('alarmas/' + alarmaId + '/usuarios');
+    const usuariosSnap = await usuariosRef.once('value');
+    const usuarios = usuariosSnap.val() || {};
+
+    const eraAdmin = miUid === adminUid;
+    if (eraAdmin) {
+      const siguienteAdmin = Object.keys(usuarios).find((uid) => uid !== miUid);
+      const adminRef = db.ref('alarmas/' + alarmaId + '/adminUid');
+      if (siguienteAdmin) {
+        await adminRef.set(siguienteAdmin);
+      } else {
+        await adminRef.remove();
+      }
+    }
+
+    await db.ref('alarmas/' + alarmaId + '/usuarios/' + miUid).remove();
+    await db.ref('userAlarma/' + miUid).remove();
+  } catch (e) {
+    console.warn('No se pudo liberar el cupo al cerrar sesion:', e.message || e);
+  }
+}
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await liberarCupoAlCerrarSesion();
   auth.signOut().then(() => {
     window.location.href = 'index.html';
   });
@@ -208,21 +242,37 @@ document.getElementById('modal-overlay').addEventListener('click', () => {
   document.getElementById('modal-overlay').classList.remove('open');
 });
 
-function actualizarEstadoSensor(sensorId, ultimoTimestamp) {
-  const dot = document.getElementById(`dot-sensor-${sensorId}`);
-  const status = document.getElementById(`status-sensor-${sensorId}`);
+function setDotEstado(dot, activo) {
+  if (!dot) return;
+  dot.classList.toggle('alert', !activo);
+}
 
-  if (!ultimoTimestamp) {
-    status.textContent = 'Pendiente de configurar ESP32-CAM';
-    dot.classList.remove('alert');
+function actualizarEstadoDispositivoUI(estado) {
+  if (!statusCamera || !statusPir1 || !statusPir2) return;
+
+  if (!estado || typeof estado !== 'object') {
+    statusCamera.textContent = 'No conectada';
+    statusPir1.textContent = 'No conectado';
+    statusPir2.textContent = 'No conectado';
+    setDotEstado(dotCamera, false);
+    setDotEstado(dotPir1, false);
+    setDotEstado(dotPir2, false);
     return;
   }
 
-  const segundosDesde = (Date.now() - ultimoTimestamp) / 1000;
-  const esReciente = segundosDesde < 30;
+  const lastSeen = Number(estado.lastSeen || 0);
+  const online = !!lastSeen && (Date.now() - lastSeen) < 600000;
+  const camOk = online && estado.camaraOk === true;
+  const pir1Ok = online && (estado.pir1Conectado === true || estado.pir1Habilitado === true);
+  const pir2Ok = online && (estado.pir2Conectado === true || estado.pir2Habilitado === true);
 
-  dot.classList.toggle('alert', esReciente);
-  status.textContent = `Última alarma: ${tiempoRelativo(ultimoTimestamp)}`;
+  setDotEstado(dotCamera, camOk);
+  setDotEstado(dotPir1, pir1Ok);
+  setDotEstado(dotPir2, pir2Ok);
+
+  statusCamera.textContent = camOk ? 'Conectada' : 'No conectada';
+  statusPir1.textContent = pir1Ok ? 'Conectado' : 'No conectado';
+  statusPir2.textContent = pir2Ok ? 'Conectado' : 'No conectado';
 }
 
 function actualizarSyncAlert() {
@@ -242,8 +292,17 @@ function actualizarSyncAlert() {
 
 // ---------- Escuchas en tiempo real (una vez que sabemos la alarmaId) ----------
 function iniciarEscuchas() {
+  escucharEstadoDispositivo();
   escucharUsuarios();
   escucharHistorial();
+}
+
+function escucharEstadoDispositivo() {
+  db.ref('alarmas/' + alarmaId + '/estadoDispositivo').on('value', (snapshot) => {
+    actualizarEstadoDispositivoUI(snapshot.val());
+  }, () => {
+    actualizarEstadoDispositivoUI(null);
+  });
 }
 
 function escucharUsuarios() {
@@ -256,7 +315,20 @@ function escucharUsuarios() {
     const data = snapshot.val() || {};
     usersList.innerHTML = '';
 
-    const total = Object.keys(data).length;
+    // Evitar mostrar correos duplicados (toma el registro más reciente por email).
+    const usuariosPorEmail = new Map();
+    Object.entries(data).forEach(([uid, u]) => {
+      const usuario = (u && typeof u === 'object') ? u : {};
+      const emailNorm = (usuario.email || uid).toLowerCase();
+      const actual = usuariosPorEmail.get(emailNorm);
+      const fechaNueva = Number(usuario.fechaAlta || 0);
+      const fechaActual = actual ? Number((actual.usuario && actual.usuario.fechaAlta) || 0) : -1;
+      if (!actual || fechaNueva >= fechaActual) {
+        usuariosPorEmail.set(emailNorm, { uid, usuario });
+      }
+    });
+
+    const total = usuariosPorEmail.size;
     const tituloUsuarios = document.querySelector('.section-title');
     // Actualiza el título con el contador
     const allTitles = document.querySelectorAll('.section-title');
@@ -266,8 +338,7 @@ function escucharUsuarios() {
       }
     });
 
-    Object.entries(data).forEach(([uid, u]) => {
-      const usuario = (u && typeof u === 'object') ? u : {};
+    Array.from(usuariosPorEmail.values()).forEach(({ uid, usuario }) => {
       const nombre = usuario.nombre || usuario.displayName || `Usuario ${uid.slice(0, 6)}`;
       const apellido = usuario.apellido || '';
       const nombreCompleto = apellido ? `${nombre} ${apellido}` : nombre;
@@ -302,10 +373,64 @@ function escucharUsuarios() {
 
       usersList.appendChild(item);
     });
+
+    // Limpieza defensiva: elimina entradas en DB cuyo email ya no existe en Auth.
+    limpiarUsuariosHuerfanosEnSegundoPlano(data);
   }, () => {
     tieneErrorUsuarios = true;
     actualizarSyncAlert();
   });
+}
+
+async function verificarSiSePuedeConsultarAuthPorEmail() {
+  if (puedeVerificarAuthPorEmail !== null) return puedeVerificarAuthPorEmail;
+  const user = auth.currentUser;
+  if (!user || !user.email) {
+    puedeVerificarAuthPorEmail = false;
+    return false;
+  }
+
+  try {
+    const metodos = await auth.fetchSignInMethodsForEmail(user.email);
+    // Si devuelve vacio para el usuario actual, esta proteccion impide validar por email.
+    puedeVerificarAuthPorEmail = Array.isArray(metodos) && metodos.length > 0;
+  } catch (e) {
+    console.warn('No se pudo validar disponibilidad de lookup en Auth:', e.message || e);
+    puedeVerificarAuthPorEmail = false;
+  }
+
+  return puedeVerificarAuthPorEmail;
+}
+
+async function limpiarUsuariosHuerfanosEnSegundoPlano(usuariosData) {
+  if (!alarmaId || !miUid || miUid !== adminUid) return;
+
+  const ahora = Date.now();
+  if ((ahora - ultimaLimpiezaHuerfanosMs) < 60000) return;
+  ultimaLimpiezaHuerfanosMs = ahora;
+
+  const puedeConsultar = await verificarSiSePuedeConsultarAuthPorEmail();
+  if (!puedeConsultar) return;
+
+  const entradas = Object.entries(usuariosData || {});
+  for (const [uid, usuario] of entradas) {
+    if (!usuario || typeof usuario !== 'object') continue;
+    if (uid === miUid) continue;
+
+    const email = (usuario.email || '').trim().toLowerCase();
+    if (!email) continue;
+
+    try {
+      const metodos = await auth.fetchSignInMethodsForEmail(email);
+      const existeEnAuth = Array.isArray(metodos) && metodos.length > 0;
+      if (!existeEnAuth) {
+        await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove();
+        await db.ref('userAlarma/' + uid).remove();
+      }
+    } catch (e) {
+      console.warn('No se pudo validar/eliminar usuario huerfano:', uid, e.message || e);
+    }
+  }
 }
 
 function escucharHistorial() {
@@ -325,8 +450,6 @@ function escucharHistorial() {
 
     if (!data) {
       emptyState.style.display = 'block';
-      actualizarEstadoSensor(1, null);
-      actualizarEstadoSensor(2, null);
       return;
     }
 
@@ -338,8 +461,6 @@ function escucharHistorial() {
 
     if (alarmas.length === 0) {
       emptyState.style.display = 'block';
-      actualizarEstadoSensor(1, null);
-      actualizarEstadoSensor(2, null);
       return;
     }
 
@@ -357,15 +478,6 @@ function escucharHistorial() {
       }
     }
     ultimoTimestampVisto = masReciente;
-
-    const ultimaPorSensor = {};
-    alarmas.forEach((alarma) => {
-      if (!ultimaPorSensor[alarma.sensor]) {
-        ultimaPorSensor[alarma.sensor] = alarma.timestamp;
-      }
-    });
-    actualizarEstadoSensor(1, ultimaPorSensor[1]);
-    actualizarEstadoSensor(2, ultimaPorSensor[2]);
 
     alarmas.forEach((alarma) => {
       const item = document.createElement('div');

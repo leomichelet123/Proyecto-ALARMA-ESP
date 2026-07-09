@@ -30,6 +30,10 @@
         "historial": {
           ".read": "auth != null && root.child('userAlarma').child(auth.uid).val() === $alarmaId",
           ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid)"
+        },
+        "estadoDispositivo": {
+          ".read": "auth != null && root.child('userAlarma').child(auth.uid).val() === $alarmaId",
+          ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid)"
         }
       }
     }

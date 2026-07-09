@@ -16,17 +16,23 @@
 // Token de sesión del dispositivo (se obtiene al autenticarse contra Firebase)
 String idToken = "";
 
-// Evita disparos repetidos del mismo sensor en poco tiempo
-#define TIEMPO_ENTRE_ALARMAS_MS 15000
-
 unsigned long ultimaAlarmaPIR1 = 0;
 unsigned long ultimaAlarmaPIR2 = 0;
 unsigned long ultimoHeartbeat = 0;
 unsigned long ultimaAlarmaTest = 0;
+unsigned long ultimoEstadoDispositivo = 0;
+unsigned long ultimoDiagnosticoDb = 0;
+bool camaraInicializadaOk = false;
+bool camaraActiva = false;
+int ultimoEstadoPIR1 = LOW;
+int ultimoEstadoPIR2 = LOW;
+unsigned long ultimoPulsoPIR1 = 0;
+unsigned long ultimoPulsoPIR2 = 0;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
 bool autenticarDispositivo();
+bool asegurarAutenticacionFirebase();
 bool inicializarCamara();
 camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& storagePath);
@@ -34,6 +40,14 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String&
 void procesarAlarma(int sensorId);
 String codificarNombreObjetoStorage(const String& storagePath);
 bool postJsonEnDatabase(const String& url, const String& body, const String& etiqueta);
+bool putJsonEnDatabase(const String& url, const String& body, const String& etiqueta);
+void publicarEstadoDispositivo(bool forzar);
+String construirUrlDbConAuth(const String& urlBase);
+void diagnosticarEndpointDatabase();
+void diagnosticarHostHttps(const char* host, const char* etiqueta);
+bool publicarEstadoDispositivoConReintento(const String& url, const String& body);
+void configurarClienteSeguro(WiFiClientSecure& client);
+void probarHowsMySSL();
 
 void setup() {
   Serial.begin(115200);
@@ -55,15 +69,31 @@ void setup() {
   Serial.println("[BOOT] Iniciando WiFi");
   conectarWiFi();
 
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("[BOOT] Autenticando dispositivo en Firebase");
+    if (!asegurarAutenticacionFirebase()) {
+      Serial.println("[BOOT] No se pudo autenticar en Firebase. El sistema seguira activo, pero no podra subir eventos hasta recuperar autenticacion.");
+    }
+    diagnosticarEndpointDatabase();
+    probarHowsMySSL();
+  }
+
   Serial.println("[BOOT] Iniciando camara");
   if (!inicializarCamara()) {
     Serial.println("ERROR: no se pudo inicializar la cámara. Reiniciando...");
     delay(3000);
     ESP.restart();
   }
+  camaraInicializadaOk = true;
+  camaraActiva = true;
+
+  // Liberar la camara en reposo deja más RAM interna para TLS/Firebase.
+  esp_camera_deinit();
+  camaraActiva = false;
 
   Serial.println("[BOOT] Camara inicializada");
   Serial.println("Sistema listo. Esperando detecciones...");
+  publicarEstadoDispositivo(true);
 }
 
 void loop() {
@@ -98,7 +128,19 @@ void loop() {
   }
 
   int estadoPIR1 = digitalRead(PIR1_PIN);
-  int estadoPIR2 = digitalRead(PIR2_PIN);
+  int estadoPIR2 = PIR2_HABILITADO ? digitalRead(PIR2_PIN) : LOW;
+  ultimoEstadoPIR1 = estadoPIR1;
+  ultimoEstadoPIR2 = estadoPIR2;
+
+  unsigned long ahoraPulso = millis();
+  if (estadoPIR1 == HIGH) {
+    ultimoPulsoPIR1 = ahoraPulso;
+  }
+  if (estadoPIR2 == HIGH) {
+    ultimoPulsoPIR2 = ahoraPulso;
+  }
+
+  publicarEstadoDispositivo(false);
 
   if (estadoPIR1 == HIGH && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
     ultimaAlarmaPIR1 = ahora;
@@ -106,7 +148,7 @@ void loop() {
     procesarAlarma(1);
   }
 
-  if (estadoPIR2 == HIGH && (ahora - ultimaAlarmaPIR2) > TIEMPO_ENTRE_ALARMAS_MS) {
+  if (PIR2_HABILITADO && estadoPIR2 == HIGH && (ahora - ultimaAlarmaPIR2) > TIEMPO_ENTRE_ALARMAS_MS) {
     ultimaAlarmaPIR2 = ahora;
     Serial.println(">>> Movimiento detectado: Sensor 2");
     procesarAlarma(2);
@@ -118,11 +160,46 @@ void loop() {
 // ==================== WiFi ====================
 void conectarWiFi() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.setSleep(false);
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(200);
+
+  Serial.printf("[WIFI] SSID objetivo: %s\n", WIFI_SSID);
+
+  int canalObjetivo = 0;
+  int redes = WiFi.scanNetworks(false, true);
+  if (redes <= 0) {
+    Serial.println("[WIFI] No se detectaron redes en el escaneo inicial.");
+  } else {
+    bool encontrada = false;
+    for (int i = 0; i < redes; i++) {
+      String ssid = WiFi.SSID(i);
+      if (ssid == String(WIFI_SSID)) {
+        encontrada = true;
+        canalObjetivo = WiFi.channel(i);
+        Serial.printf("[WIFI] Red encontrada | canal=%d | RSSI=%d dBm | encript=%d\n",
+                      canalObjetivo,
+                      WiFi.RSSI(i),
+                      (int)WiFi.encryptionType(i));
+        break;
+      }
+    }
+
+    if (!encontrada) {
+      Serial.println("[WIFI] El SSID configurado no aparece en el escaneo.");
+    }
+  }
+
+  if (canalObjetivo > 0) {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD, canalObjetivo);
+  } else {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
 
   Serial.print("Conectando a WiFi");
   int intentos = 0;
-  while (WiFi.status() != WL_CONNECTED && intentos < 30) {
+  while (WiFi.status() != WL_CONNECTED && intentos < 40) {
     delay(500);
     Serial.print(".");
     intentos++;
@@ -132,6 +209,8 @@ void conectarWiFi() {
     Serial.println("\nWiFi conectado. IP: " + WiFi.localIP().toString());
   } else {
     Serial.println("\nNo se pudo conectar al WiFi.");
+    Serial.printf("[WIFI] Estado final=%d\n", WiFi.status());
+    Serial.println("[WIFI] Si aparece 4WAY_HANDSHAKE_TIMEOUT, revisar clave y seguridad WPA2/WPA3 del router/hotspot.");
     Serial.println("[BOOT] Continuando sin WiFi; las subidas a Firebase van a fallar");
   }
 }
@@ -147,8 +226,7 @@ bool autenticarDispositivo() {
 
   for (int intento = 1; intento <= 3; intento++) {
     WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(10000);
+    configurarClienteSeguro(client);
 
     HTTPClient http;
     http.begin(client, url);
@@ -188,6 +266,24 @@ bool autenticarDispositivo() {
   return false;
 }
 
+bool asegurarAutenticacionFirebase() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[AUTH] Sin WiFi, no se puede autenticar.");
+    return false;
+  }
+
+  if (idToken.length() > 0) {
+    return true;
+  }
+
+  Serial.println("[AUTH] Solicitando token Firebase...");
+  bool ok = autenticarDispositivo();
+  if (!ok) {
+    Serial.println("[AUTH] Fallo autenticacion Firebase.");
+  }
+  return ok;
+}
+
 
 bool inicializarCamara() {
   camera_config_t config;
@@ -214,13 +310,14 @@ bool inicializarCamara() {
 
   if (psramFound()) {
     Serial.println("[BOOT] PSRAM detectada");
-    config.frame_size = FRAMESIZE_SVGA;   // 800x600, buena calidad sin ser muy pesada
-    config.jpeg_quality = 12;             // menor número = mejor calidad
-    config.fb_count = 2;
+    // Modo ultra estable para priorizar TLS/Firebase sobre calidad maxima.
+    config.frame_size = FRAMESIZE_QVGA;
+    config.jpeg_quality = 16;
+    config.fb_count = 1;
   } else {
     Serial.println("[BOOT] PSRAM no detectada");
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 15;
+    config.frame_size = FRAMESIZE_QVGA;
+    config.jpeg_quality = 16;
     config.fb_count = 1;
   }
 
@@ -234,6 +331,17 @@ bool inicializarCamara() {
 }
 
 camera_fb_t* tomarFoto() {
+  if (!camaraActiva) {
+    Serial.println("[CAM] Activando camara para captura");
+    if (!inicializarCamara()) {
+      Serial.println("[CAM] No se pudo activar la camara");
+      camaraInicializadaOk = false;
+      return nullptr;
+    }
+    camaraActiva = true;
+    camaraInicializadaOk = true;
+  }
+
   Serial.println("[CAM] Capturando foto");
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
@@ -266,8 +374,7 @@ String codificarNombreObjetoStorage(const String& nombreArchivo) {
 // Sube la foto usando la REST API de Firebase Storage (Google Cloud Storage JSON API)
 String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
   WiFiClientSecure client;
-  client.setInsecure(); // simplifica el proyecto; para producción, validar certificado
-  client.setTimeout(15000);
+  configurarClienteSeguro(client);
 
   HTTPClient http;
   String encodedName = codificarNombreObjetoStorage(nombreArchivo);
@@ -301,10 +408,13 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
 // ==================== Firebase Realtime Database ====================
 bool postJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
   WiFiClientSecure client;
-  client.setInsecure();
+  configurarClienteSeguro(client);
 
   HTTPClient http;
-  http.begin(client, url);
+  String urlConAuth = construirUrlDbConAuth(url);
+  http.begin(client, urlConAuth);
+  http.setTimeout(15000);
+  http.setReuse(false);
   http.addHeader("Content-Type", "application/json");
 
   int httpCode = http.POST(body);
@@ -319,6 +429,187 @@ bool postJsonEnDatabase(const String& url, const String& body, const String& eti
   Serial.println(http.getString());
   http.end();
   return false;
+}
+
+bool putJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
+  WiFiClientSecure client;
+  configurarClienteSeguro(client);
+
+  HTTPClient http;
+  String urlConAuth = construirUrlDbConAuth(url);
+  http.begin(client, urlConAuth);
+  http.setTimeout(15000);
+  http.setReuse(false);
+  http.addHeader("Content-Type", "application/json");
+
+  int httpCode = http.PUT(body);
+  if (httpCode == 200) {
+    Serial.println(etiqueta + " OK");
+    http.end();
+    return true;
+  }
+
+  Serial.println(etiqueta + " ERROR");
+  Serial.printf("Error HTTP: %d\n", httpCode);
+  Serial.println(http.getString());
+  http.end();
+  return false;
+}
+
+void publicarEstadoDispositivo(bool forzar) {
+  const unsigned long intervaloMs = 15000;
+  const unsigned long ventanaSensorConectadoMs = 45000;
+  unsigned long ahora = millis();
+
+  if (!forzar && (ahora - ultimoEstadoDispositivo) < intervaloMs) {
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if (!asegurarAutenticacionFirebase()) {
+    return;
+  }
+
+  String compatAlarmaId = String(WEB_COMPAT_ALARMA_ID);
+  if (compatAlarmaId.length() == 0) {
+    return;
+  }
+
+  String body = "{";
+  body += "\"online\":true,";
+  body += "\"wifiConectado\":true,";
+  body += "\"wifiRssi\":" + String(WiFi.RSSI()) + ",";
+  body += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  body += "\"camaraOk\":" + String(camaraInicializadaOk ? "true" : "false") + ",";
+  bool pir1Conectado = (ahora - ultimoPulsoPIR1) <= ventanaSensorConectadoMs;
+  bool pir2Conectado = PIR2_HABILITADO && ((ahora - ultimoPulsoPIR2) <= ventanaSensorConectadoMs);
+  body += "\"pir1Conectado\":" + String(pir1Conectado ? "true" : "false") + ",";
+  body += "\"pir2Conectado\":" + String(pir2Conectado ? "true" : "false") + ",";
+  body += "\"pir1Estado\":" + String(ultimoEstadoPIR1) + ",";
+  body += "\"pir2Estado\":" + String(ultimoEstadoPIR2) + ",";
+  body += "\"uptimeMs\":" + String(ahora) + ",";
+  body += "\"lastSeen\":{\".sv\":\"timestamp\"}";
+  body += "}";
+
+  String dbBase = "https://" + String(FIREBASE_DATABASE_URL);
+  String urlEstado = dbBase + "/alarmas/" + compatAlarmaId + "/estadoDispositivo.json";
+  if (publicarEstadoDispositivoConReintento(urlEstado, body)) {
+    ultimoEstadoDispositivo = ahora;
+  }
+}
+
+bool publicarEstadoDispositivoConReintento(const String& url, const String& body) {
+  if (putJsonEnDatabase(url, body, "[DB] estado dispositivo")) {
+    return true;
+  }
+
+  // Reintento simple: evita sobrecargar TLS con reauth agresivo.
+  delay(400);
+  Serial.println("[DB] estado dispositivo reintento...");
+  if (putJsonEnDatabase(url, body, "[DB] estado dispositivo")) {
+    return true;
+  }
+
+  // Si sigue fallando, recien ahi forzamos reautenticación.
+  idToken = "";
+  if (!asegurarAutenticacionFirebase()) {
+    Serial.println("[DB] estado dispositivo reauth ERROR");
+    return false;
+  }
+
+  return putJsonEnDatabase(url, body, "[DB] estado dispositivo");
+}
+
+String construirUrlDbConAuth(const String& urlBase) {
+  if (idToken.length() == 0) {
+    return urlBase;
+  }
+
+  if (urlBase.indexOf("?") >= 0) {
+    return urlBase + "&auth=" + idToken;
+  }
+  return urlBase + "?auth=" + idToken;
+}
+
+void diagnosticarEndpointDatabase() {
+  IPAddress ip;
+  bool dnsOk = WiFi.hostByName(FIREBASE_DATABASE_URL, ip);
+  if (dnsOk) {
+    Serial.printf("[DB] DNS OK %s -> %s\n", FIREBASE_DATABASE_URL, ip.toString().c_str());
+  } else {
+    Serial.printf("[DB] DNS ERROR para %s\n", FIREBASE_DATABASE_URL);
+    return;
+  }
+
+  WiFiClientSecure testClient;
+  configurarClienteSeguro(testClient);
+  if (testClient.connect(FIREBASE_DATABASE_URL, 443)) {
+    Serial.println("[DB] TLS OK (puerto 443 accesible)");
+    testClient.stop();
+  } else {
+    Serial.println("[DB] TLS ERROR (no se pudo abrir conexion HTTPS con RTDB)");
+  }
+
+  diagnosticarHostHttps("identitytoolkit.googleapis.com", "AUTH");
+  diagnosticarHostHttps(FIREBASE_DATABASE_URL, "RTDB");
+}
+
+void diagnosticarHostHttps(const char* host, const char* etiqueta) {
+  WiFiClientSecure testClient;
+  configurarClienteSeguro(testClient);
+
+  if (testClient.connect(host, 443)) {
+    Serial.printf("[NET] %s HTTPS OK -> %s\n", etiqueta, host);
+    testClient.stop();
+  } else {
+    Serial.printf("[NET] %s HTTPS ERROR -> %s\n", etiqueta, host);
+  }
+}
+
+void configurarClienteSeguro(WiFiClientSecure& client) {
+  client.setInsecure();
+  client.setTimeout(15000);
+}
+
+void probarHowsMySSL() {
+  Serial.println("[TLS] Probando howsmyssl.com...");
+
+  WiFiClientSecure client;
+  configurarClienteSeguro(client);
+
+  HTTPClient http;
+  const String url = "https://www.howsmyssl.com/a/check";
+  if (!http.begin(client, url)) {
+    Serial.println("[TLS] howsmyssl begin() ERROR");
+    return;
+  }
+
+  http.setTimeout(12000);
+  http.setReuse(false);
+  int httpCode = http.GET();
+  if (httpCode != 200) {
+    Serial.printf("[TLS] howsmyssl HTTP ERROR: %d\n", httpCode);
+    http.end();
+    return;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(4096);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.println("[TLS] howsmyssl JSON ERROR");
+    return;
+  }
+
+  const char* tlsVersion = doc["tls_version"] | "desconocida";
+  const char* rating = doc["rating"] | "desconocido";
+
+  Serial.printf("[TLS] howsmyssl OK | tls_version=%s | rating=%s\n", tlsVersion, rating);
 }
 
 void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante) {
@@ -357,15 +648,50 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String&
 
 // ==================== Lógica principal de alarma ====================
 void procesarAlarma(int sensorId) {
-  camera_fb_t* fb = tomarFoto();
-  if (!fb) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[ALARM] Sin WiFi, no se puede procesar la alarma en Firebase.");
+    return;
+  }
 
-  String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + ".jpg";
-  String photoUrl = subirFotoAStorage(fb, storagePath);
+  if (!asegurarAutenticacionFirebase()) {
+    Serial.println("[ALARM] Sin token Firebase valido, se cancela el envio de la alarma.");
+    return;
+  }
 
-  esp_camera_fb_return(fb); // liberar memoria de la foto
+  Serial.printf("[ALARM] Secuencia iniciada | sensor=%d | fotos=%d\n", sensorId, SECUENCIA_FOTOS_POR_EVENTO);
 
-  if (photoUrl != "") {
-    guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false);
+  for (int i = 0; i < SECUENCIA_FOTOS_POR_EVENTO; i++) {
+    camera_fb_t* fb = tomarFoto();
+    if (!fb) {
+      Serial.printf("[ALARM] Foto %d/%d fallida al capturar\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
+      String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + "_f" + String(i + 1) + ".jpg";
+      guardarAlarmaEnDatabase(sensorId, "", storagePath, false);
+      Serial.printf("[ALARM] Foto %d/%d: evento guardado sin foto\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
+    } else {
+      String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + "_f" + String(i + 1) + ".jpg";
+      String photoUrl = subirFotoAStorage(fb, storagePath);
+      esp_camera_fb_return(fb); // liberar memoria de la foto
+
+      if (photoUrl != "") {
+        guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false);
+        Serial.printf("[ALARM] Foto %d/%d subida y guardada\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
+      } else {
+        Serial.printf("[ALARM] Foto %d/%d no se pudo subir\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
+        guardarAlarmaEnDatabase(sensorId, "", storagePath, false);
+        Serial.printf("[ALARM] Foto %d/%d: evento guardado sin foto\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
+      }
+    }
+
+    if (i < SECUENCIA_FOTOS_POR_EVENTO - 1) {
+      delay(INTERVALO_ENTRE_FOTOS_MS);
+    }
+  }
+
+  Serial.println("[ALARM] Secuencia finalizada");
+
+  if (camaraActiva) {
+    esp_camera_deinit();
+    camaraActiva = false;
+    Serial.println("[CAM] Camara liberada tras secuencia");
   }
 }

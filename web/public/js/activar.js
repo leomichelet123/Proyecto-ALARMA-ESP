@@ -5,6 +5,8 @@ const camposCuenta = document.getElementById('campos-cuenta');
 
 const MAX_USUARIOS = 4;
 let usuarioYaLogueado = null;
+const CODIGO_ACTIVACION_FIJO = 'ABC123XY';
+const ALARMA_ID_FIJA = 'alarma001';
 
 // Si el usuario ya tiene sesión, ocultar campos de email/password
 auth.onAuthStateChanged((user) => {
@@ -48,7 +50,14 @@ function traducirError(codigo) {
   const mensajes = {
     'auth/invalid-email': 'El correo electrónico no es válido.',
     'auth/email-already-in-use': 'Ya existe una cuenta con ese correo.',
+    'auth/wrong-password': 'La contraseña no coincide con ese correo.',
+    'auth/user-not-found': 'No existe una cuenta con ese correo.',
     'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres.',
+    'auth/operation-not-allowed': 'Registro por correo/contraseña deshabilitado en Firebase Auth.',
+    'auth/network-request-failed': 'Error de red. Revisá tu conexión e intentá de nuevo.',
+    'PERMISSION_DENIED': 'Permiso denegado en Firebase. Revisá reglas/configuración.',
+    'CODIGO_INVALIDO': 'El código de activación no es válido.',
+    'LIMITE_ALCANZADO': 'Esta alarma ya tiene el máximo de 4 usuarios.'
   };
   return mensajes[codigo] || 'Ocurrió un error. Intentá de nuevo.';
 }
@@ -68,9 +77,10 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (codigo !== 'ABC123XY') {
+  if (codigo !== CODIGO_ACTIVACION_FIJO) {
     mostrarError('Código de activación inválido.');
     btnActivar.disabled = false;
+    btnActivar.classList.remove('loading');
     btnActivar.textContent = 'Activar y crear cuenta';
     return;
   }
@@ -80,6 +90,7 @@ form.addEventListener('submit', async (e) => {
   btnActivar.textContent = 'Verificando...';
 
   let userCredential;
+  let creoCuentaNueva = false;
 
   try {
     await asegurarPersistenciaLocal();
@@ -101,63 +112,80 @@ form.addEventListener('submit', async (e) => {
         btnActivar.textContent = 'Activar y crear cuenta';
         return;
       }
-      userCredential = await auth.createUserWithEmailAndPassword(email, password);
+      try {
+        userCredential = await auth.createUserWithEmailAndPassword(email, password);
+        creoCuentaNueva = true;
+      } catch (errCrear) {
+        // Si el correo ya existe, usamos la cuenta existente en vez de fallar.
+        if (errCrear.code === 'auth/email-already-in-use') {
+          userCredential = await auth.signInWithEmailAndPassword(email, password);
+        } else {
+          throw errCrear;
+        }
+      }
       uid = userCredential.user.uid;
       emailFinal = email;
     }
 
-    // 2) Validar el código de activación
-    const codigoSnap = await db.ref('codigosActivacion/' + codigo).once('value');
-    const codigoData = codigoSnap.val();
+    // 2) Alarma fija para flujo actual de la web.
+    const alarmaId = ALARMA_ID_FIJA;
 
-    if (!codigoData || codigoData.activo !== true) {
-      throw new Error('CODIGO_INVALIDO');
-    }
-
-    const alarmaId = codigoData.alarmaId;
-
-    // 3) Chequear que no se haya llegado al máximo de usuarios
+    // 3) Chequear miembros y evitar duplicados por email
     const usuariosSnap = await db.ref('alarmas/' + alarmaId + '/usuarios').once('value');
-    const cantidadActual = usuariosSnap.numChildren();
+    const usuariosData = usuariosSnap.val() || {};
+    const cantidadActual = Object.keys(usuariosData).length;
 
-    if (cantidadActual >= MAX_USUARIOS) {
+    const uidYaRegistrado = !!usuariosData[uid];
+    const emailNormalizado = (emailFinal || '').toLowerCase();
+    const existeMismoEmail = Object.values(usuariosData).some((u) => {
+      if (!u || typeof u !== 'object') return false;
+      return (u.email || '').toLowerCase() === emailNormalizado;
+    });
+
+    if (!uidYaRegistrado && !existeMismoEmail && cantidadActual >= MAX_USUARIOS) {
       throw new Error('LIMITE_ALCANZADO');
     }
 
-    // 4) Registrar al usuario dentro de la alarma
-    await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).set({
-      nombre: nombre,
-      apellido: apellido,
-      email: emailFinal,
-      fechaAlta: firebase.database.ServerValue.TIMESTAMP
-    });
-
-    // 5) Si es el primer usuario, asignarlo como admin
-    const adminSnap = await db.ref('alarmas/' + alarmaId + '/adminUid').once('value');
-    if (!adminSnap.val()) {
-      await db.ref('alarmas/' + alarmaId + '/adminUid').set(uid);
+    // 4) Registrar al usuario dentro de la alarma solo si no existe ya por UID o email
+    if (!uidYaRegistrado && !existeMismoEmail) {
+      await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).set({
+        nombre: nombre,
+        apellido: apellido,
+        email: emailFinal,
+        fechaAlta: firebase.database.ServerValue.TIMESTAMP
+      });
     }
 
-    // 6) Guardar el mapeo para saber a qué alarma pertenece este usuario
+    // 5) Guardar primero el mapeo para cumplir reglas de adminUid
     await db.ref('userAlarma/' + uid).set(alarmaId);
+
+    // 6) Si es el primer usuario, intentar asignarlo como admin
+    // (si falla por carrera, no bloquea el alta del usuario)
+    const adminSnap = await db.ref('alarmas/' + alarmaId + '/adminUid').once('value');
+    if (!adminSnap.val()) {
+      try {
+        await db.ref('alarmas/' + alarmaId + '/adminUid').set(uid);
+      } catch (e) {
+        console.warn('No se pudo asignar adminUid en este intento:', e.message || e);
+      }
+    }
 
     window.location.href = 'dashboard.html';
 
   } catch (err) {
     // Si algo falló después de crear la cuenta, la borramos para no
     // dejar cuentas huérfanas sin acceso a ninguna alarma
-    if (userCredential && userCredential.user) {
+    if (creoCuentaNueva && userCredential && userCredential.user) {
       await userCredential.user.delete().catch(() => {});
     }
 
-    if (err.message === 'CODIGO_INVALIDO') {
-      mostrarError('El código de activación no es válido.');
-    } else if (err.message === 'LIMITE_ALCANZADO') {
-      mostrarError('Esta alarma ya tiene el máximo de 4 usuarios.');
+    if (err.message === 'CODIGO_INVALIDO' || err.message === 'LIMITE_ALCANZADO') {
+      mostrarError(traducirError(err.message));
     } else if (err.code) {
       mostrarError(traducirError(err.code));
     } else {
-      mostrarError('Ocurrió un error. Intentá de nuevo.');
+      const detalle = (err && (err.message || err.code)) ? ` (${err.message || err.code})` : '';
+      mostrarError('Ocurrió un error. Intentá de nuevo.' + detalle);
     }
 
     document.getElementById('codigo').value = '';
