@@ -8,3 +8,4 @@ firmware/.vscode/
 # Sistema
 .DS_Store
 Thumbs.db
+.firebase/
