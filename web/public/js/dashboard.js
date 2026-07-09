@@ -6,6 +6,11 @@ let tieneErrorHistorial = false;
 let ultimoTimestampVisto = null;
 let ultimaLimpiezaHuerfanosMs = 0;
 let puedeVerificarAuthPorEmail = null;
+const RETENCION_DIAS_HISTORIAL = 7;
+const RETENCION_MS_HISTORIAL = RETENCION_DIAS_HISTORIAL * 24 * 60 * 60 * 1000;
+const LIMPIEZA_RETENCION_INTERVALO_MS = 15 * 60 * 1000;
+let ultimaLimpiezaRetencionMs = 0;
+let limpiezaRetencionEnCurso = false;
 
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
@@ -170,6 +175,85 @@ auth.onAuthStateChanged(async (user) => {
 async function cargarAdminUid() {
   const snap = await db.ref('alarmas/' + alarmaId + '/adminUid').once('value');
   adminUid = snap.val();
+
+  // Si este usuario es admin, dispara una limpieza de retencion al ingresar.
+  if (adminUid && miUid === adminUid) {
+    try {
+      const historialSnap = await db.ref('alarmas/' + alarmaId + '/historial').once('value');
+      await limpiarHistorialAntiguoEnSegundoPlano(historialSnap.val() || {}, true);
+    } catch (e) {
+      console.warn('No se pudo ejecutar limpieza inicial de retencion:', e.message || e);
+    }
+  }
+}
+
+function obtenerPathStorageDesdeEvento(alarma) {
+  const path = (alarma && typeof alarma.storagePath === 'string') ? alarma.storagePath.trim() : '';
+  if (path) return path;
+
+  const url = (alarma && typeof alarma.photoUrl === 'string') ? alarma.photoUrl : '';
+  if (!url) return '';
+
+  try {
+    const marker = '/o/';
+    const idx = url.indexOf(marker);
+    if (idx === -1) return '';
+    const encodedPart = url.substring(idx + marker.length).split('?')[0];
+    return decodeURIComponent(encodedPart || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+async function eliminarFotoStoragePorEvento(alarma) {
+  const storagePath = obtenerPathStorageDesdeEvento(alarma);
+  if (!storagePath) return;
+
+  try {
+    await firebase.storage().ref().child(storagePath).delete();
+  } catch (e) {
+    const code = e && e.code ? e.code : '';
+    // Ignora si ya no existe en Storage.
+    if (code !== 'storage/object-not-found') {
+      console.warn('No se pudo borrar foto de Storage:', storagePath, code || e.message || e);
+    }
+  }
+}
+
+async function limpiarHistorialAntiguoEnSegundoPlano(historialData, forzar = false) {
+  if (!alarmaId || !miUid || miUid !== adminUid) return;
+  if (limpiezaRetencionEnCurso) return;
+
+  const ahora = Date.now();
+  if (!forzar && (ahora - ultimaLimpiezaRetencionMs) < LIMPIEZA_RETENCION_INTERVALO_MS) {
+    return;
+  }
+
+  const data = historialData || {};
+  const limite = ahora - RETENCION_MS_HISTORIAL;
+  const candidatos = Object.entries(data).filter(([_, evento]) => {
+    if (!evento || typeof evento !== 'object') return false;
+    const ts = Number(evento.timestamp || 0);
+    return ts > 0 && ts < limite;
+  });
+
+  if (candidatos.length === 0) {
+    ultimaLimpiezaRetencionMs = ahora;
+    return;
+  }
+
+  limpiezaRetencionEnCurso = true;
+  try {
+    for (const [eventoId, evento] of candidatos) {
+      await eliminarFotoStoragePorEvento(evento);
+      await db.ref('alarmas/' + alarmaId + '/historial/' + eventoId).remove();
+    }
+    ultimaLimpiezaRetencionMs = Date.now();
+  } catch (e) {
+    console.warn('No se pudo completar limpieza de retencion semanal:', e.message || e);
+  } finally {
+    limpiezaRetencionEnCurso = false;
+  }
 }
 
 async function liberarCupoAlCerrarSesion() {
@@ -457,6 +541,8 @@ function escucharHistorial() {
 
     const data = snapshot.val();
     historyList.innerHTML = '';
+
+    limpiarHistorialAntiguoEnSegundoPlano(data || {});
 
     if (!data) {
       emptyState.style.display = 'block';
