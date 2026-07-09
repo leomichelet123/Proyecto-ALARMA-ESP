@@ -248,31 +248,41 @@ function setDotEstado(dot, activo) {
 }
 
 function actualizarEstadoDispositivoUI(estado) {
-  if (!statusCamera || !statusPir1 || !statusPir2) return;
+  if (!statusCamera) return;
 
   if (!estado || typeof estado !== 'object') {
     statusCamera.textContent = 'No conectada';
-    statusPir1.textContent = 'No conectado';
-    statusPir2.textContent = 'No conectado';
     setDotEstado(dotCamera, false);
-    setDotEstado(dotPir1, false);
-    setDotEstado(dotPir2, false);
     return;
   }
 
   const lastSeen = Number(estado.lastSeen || 0);
   const online = !!lastSeen && (Date.now() - lastSeen) < 600000;
   const camOk = online && estado.camaraOk === true;
-  const pir1Ok = online && (estado.pir1Conectado === true || estado.pir1Habilitado === true);
-  const pir2Ok = online && (estado.pir2Conectado === true || estado.pir2Habilitado === true);
 
   setDotEstado(dotCamera, camOk);
-  setDotEstado(dotPir1, pir1Ok);
-  setDotEstado(dotPir2, pir2Ok);
-
   statusCamera.textContent = camOk ? 'Conectada' : 'No conectada';
-  statusPir1.textContent = pir1Ok ? 'Conectado' : 'No conectado';
-  statusPir2.textContent = pir2Ok ? 'Conectado' : 'No conectado';
+}
+
+// Los PIR no tienen forma de "avisar" que están conectados: solo informan
+// cuando detectan movimiento. Por eso su estado se calcula a partir del
+// historial de alarmas (última vez que dispararon), no de una conexión.
+function actualizarEstadoSensorPIR(dot, statusEl, ultimoTimestamp) {
+  if (!statusEl) return;
+
+  if (!ultimoTimestamp) {
+    statusEl.textContent = 'Sin datos aún';
+    setDotEstado(dot, false);
+    return;
+  }
+
+  const segundosDesde = (Date.now() - ultimoTimestamp) / 1000;
+  const esReciente = segundosDesde < 30;
+
+  setDotEstado(dot, esReciente);
+  statusEl.textContent = esReciente
+    ? 'Movimiento detectado ahora'
+    : `Última vez: ${tiempoRelativo(ultimoTimestamp)}`;
 }
 
 function actualizarSyncAlert() {
@@ -450,6 +460,8 @@ function escucharHistorial() {
 
     if (!data) {
       emptyState.style.display = 'block';
+      actualizarEstadoSensorPIR(dotPir1, statusPir1, null);
+      actualizarEstadoSensorPIR(dotPir2, statusPir2, null);
       return;
     }
 
@@ -461,6 +473,8 @@ function escucharHistorial() {
 
     if (alarmas.length === 0) {
       emptyState.style.display = 'block';
+      actualizarEstadoSensorPIR(dotPir1, statusPir1, null);
+      actualizarEstadoSensorPIR(dotPir2, statusPir2, null);
       return;
     }
 
@@ -478,6 +492,14 @@ function escucharHistorial() {
       }
     }
     ultimoTimestampVisto = masReciente;
+
+    // Actualizar estado de cada PIR según la última vez que disparó
+    const ultimaPorSensor = {};
+    alarmas.forEach((a) => {
+      if (!ultimaPorSensor[a.sensor]) ultimaPorSensor[a.sensor] = a.timestamp;
+    });
+    actualizarEstadoSensorPIR(dotPir1, statusPir1, ultimaPorSensor[1]);
+    actualizarEstadoSensorPIR(dotPir2, statusPir2, ultimaPorSensor[2]);
 
     alarmas.forEach((alarma) => {
       const item = document.createElement('div');
