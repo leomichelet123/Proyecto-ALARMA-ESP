@@ -18,6 +18,8 @@
 // ==================== Pines ====================
 #define PIR1_PIN 13
 #define PIR2_PIN 14
+#define PIR1_HABILITADO 1
+#define PIR2_HABILITADO 1
 
 #endif
 	

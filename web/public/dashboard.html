@@ -40,18 +40,21 @@
         </div>
       </div>
       <div class="sensor-card">
-        <span class="pulse-dot" id="dot-pir-1"></span>
+        <span class="pulse-dot" id="dot-pir-general"></span>
         <div class="sensor-info">
-          <div class="sensor-name">Sensor 1 · PIR</div>
-          <div class="sensor-status" id="status-pir-1">Sin datos aún</div>
+          <div class="sensor-name">Sensor PIR · General</div>
+          <div class="sensor-status" id="status-pir-general">Sin datos aún</div>
         </div>
       </div>
-      <div class="sensor-card">
-        <span class="pulse-dot" id="dot-pir-2"></span>
-        <div class="sensor-info">
-          <div class="sensor-name">Sensor 2 · PIR</div>
-          <div class="sensor-status" id="status-pir-2">Sin datos aún</div>
-        </div>
+    </div>
+
+    <div class="section-title">Acciones</div>
+    <div class="action-row">
+      <div class="action-card">
+        <div class="action-title">Captura manual</div>
+        <p class="action-help">Pedile al ESP32-CAM que saque una foto en cualquier momento.</p>
+        <button id="btn-photo-now" class="action-btn" type="button">Sacar foto ahora</button>
+        <div id="manual-photo-status" class="action-status">Listo para enviar solicitud.</div>
       </div>
     </div>
 

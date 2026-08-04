@@ -22,6 +22,7 @@ unsigned long ultimoHeartbeat = 0;
 unsigned long ultimaAlarmaTest = 0;
 unsigned long ultimoEstadoDispositivo = 0;
 unsigned long ultimoDiagnosticoDb = 0;
+unsigned long ultimoChequeoComandoManual = 0;
 bool camaraInicializadaOk = false;
 bool camaraActiva = false;
 int ultimoEstadoPIR1 = LOW;
@@ -36,9 +37,14 @@ bool asegurarAutenticacionFirebase();
 bool inicializarCamara();
 camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& storagePath);
-void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante);
+void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento = "movimiento");
 void procesarAlarma(int sensorId);
+void procesarCapturaManual();
+void revisarComandoCapturaManual();
+bool leerComandoCapturaManualPendiente();
+void actualizarEstadoComandoCaptura(const String& estado, const String& detalle);
 String codificarNombreObjetoStorage(const String& storagePath);
+String generarTokenDescarga();
 bool postJsonEnDatabase(const String& url, const String& body, const String& etiqueta);
 bool putJsonEnDatabase(const String& url, const String& body, const String& etiqueta);
 void publicarEstadoDispositivo(bool forzar);
@@ -62,9 +68,9 @@ void setup() {
 #endif
 
   Serial.println("[BOOT] Configurando pines PIR");
-  // Si el sensor no esta conectado, INPUT_PULLDOWN evita lecturas flotantes (HIGH aleatorio).
-  pinMode(PIR1_PIN, INPUT_PULLDOWN);
-  pinMode(PIR2_PIN, INPUT_PULLDOWN);
+  // INPUT puro para no "arrastrar" salidas PIR debiles y mejorar deteccion real.
+  pinMode(PIR1_PIN, INPUT);
+  pinMode(PIR2_PIN, INPUT);
 
   Serial.println("[BOOT] Iniciando WiFi");
   conectarWiFi();
@@ -127,7 +133,7 @@ void loop() {
     conectarWiFi();
   }
 
-  int estadoPIR1 = digitalRead(PIR1_PIN);
+  int estadoPIR1 = PIR1_HABILITADO ? digitalRead(PIR1_PIN) : LOW;
   int estadoPIR2 = PIR2_HABILITADO ? digitalRead(PIR2_PIN) : LOW;
   ultimoEstadoPIR1 = estadoPIR1;
   ultimoEstadoPIR2 = estadoPIR2;
@@ -141,8 +147,9 @@ void loop() {
   }
 
   publicarEstadoDispositivo(false);
+  revisarComandoCapturaManual();
 
-  if (estadoPIR1 == HIGH && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
+  if (PIR1_HABILITADO && estadoPIR1 == HIGH && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
     ultimaAlarmaPIR1 = ahora;
     Serial.println(">>> Movimiento detectado: Sensor 1");
     procesarAlarma(1);
@@ -154,7 +161,7 @@ void loop() {
     procesarAlarma(2);
   }
 
-  delay(200);
+  delay(80);
 }
 
 // ==================== WiFi ====================
@@ -370,6 +377,21 @@ String codificarNombreObjetoStorage(const String& nombreArchivo) {
   return resultado;
 }
 
+String generarTokenDescarga() {
+  const char* hex = "0123456789abcdef";
+  String token = "";
+
+  for (int i = 0; i < 32; i++) {
+    uint8_t n = (uint8_t)(esp_random() & 0x0F);
+    token += hex[n];
+    if (i == 7 || i == 11 || i == 15 || i == 19) {
+      token += '-';
+    }
+  }
+
+  return token;
+}
+
 // ==================== Firebase Storage ====================
 // Sube la foto usando la REST API de Firebase Storage (Google Cloud Storage JSON API)
 String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
@@ -378,6 +400,7 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
 
   HTTPClient http;
   String encodedName = codificarNombreObjetoStorage(nombreArchivo);
+  String downloadToken = generarTokenDescarga();
   String url = "https://firebasestorage.googleapis.com/v0/b/" +
                String(FIREBASE_STORAGE_BUCKET) +
                "/o?uploadType=media&name=" + encodedName;
@@ -385,16 +408,17 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
   http.begin(client, url);
   http.addHeader("Content-Type", "image/jpeg");
   http.addHeader("Authorization", "Firebase " + idToken);
+  http.addHeader("x-goog-meta-firebaseStorageDownloadTokens", downloadToken);
 
   int httpCode = http.POST(fb->buf, fb->len);
 
   String photoUrl = "";
   if (httpCode == 200) {
     Serial.println("Foto subida correctamente.");
-    // URL pública de descarga (funciona si las reglas de Storage permiten lectura)
+    // URL con token para que la web pueda mostrar miniaturas sin depender de cabeceras auth.
     photoUrl = "https://firebasestorage.googleapis.com/v0/b/" +
                String(FIREBASE_STORAGE_BUCKET) +
-               "/o/" + encodedName + "?alt=media";
+               "/o/" + encodedName + "?alt=media&token=" + downloadToken;
     Serial.println("[URL] " + photoUrl);
   } else {
     Serial.printf("Error al subir la foto. Código HTTP: %d\n", httpCode);
@@ -612,13 +636,14 @@ void probarHowsMySSL() {
   Serial.printf("[TLS] howsmyssl OK | tls_version=%s | rating=%s\n", tlsVersion, rating);
 }
 
-void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante) {
+void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento) {
   // ".sv":"timestamp" le pide a Firebase que ponga la hora real del
   // servidor al momento de guardar, en vez de usar millis() (que solo
   // cuenta el tiempo desde que arrancó el ESP32 y no sirve como fecha real)
   String body = "{";
   body += "\"sensor\":" + String(sensorId) + ",";
   body += "\"timestamp\":{\".sv\":\"timestamp\"},";
+  body += "\"tipoEvento\":\"" + tipoEvento + "\",";
   body += "\"photoUrl\":\"" + photoUrl + "\",";
   body += "\"storagePath\":\"" + storagePath + "\",";
   body += "\"importante\":" + String(importante ? "true" : "false") + ",";
@@ -665,7 +690,7 @@ void procesarAlarma(int sensorId) {
     if (!fb) {
       Serial.printf("[ALARM] Foto %d/%d fallida al capturar\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
       String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + "_f" + String(i + 1) + ".jpg";
-      guardarAlarmaEnDatabase(sensorId, "", storagePath, false);
+      guardarAlarmaEnDatabase(sensorId, "", storagePath, false, "movimiento");
       Serial.printf("[ALARM] Foto %d/%d: evento guardado sin foto\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
     } else {
       String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + "_f" + String(i + 1) + ".jpg";
@@ -673,11 +698,11 @@ void procesarAlarma(int sensorId) {
       esp_camera_fb_return(fb); // liberar memoria de la foto
 
       if (photoUrl != "") {
-        guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false);
+        guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false, "movimiento");
         Serial.printf("[ALARM] Foto %d/%d subida y guardada\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
       } else {
         Serial.printf("[ALARM] Foto %d/%d no se pudo subir\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
-        guardarAlarmaEnDatabase(sensorId, "", storagePath, false);
+        guardarAlarmaEnDatabase(sensorId, "", storagePath, false, "movimiento");
         Serial.printf("[ALARM] Foto %d/%d: evento guardado sin foto\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
       }
     }
@@ -694,4 +719,115 @@ void procesarAlarma(int sensorId) {
     camaraActiva = false;
     Serial.println("[CAM] Camara liberada tras secuencia");
   }
+}
+
+void procesarCapturaManual() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[MANUAL] Sin WiFi, no se puede sacar foto manual.");
+    return;
+  }
+
+  if (!asegurarAutenticacionFirebase()) {
+    Serial.println("[MANUAL] Sin token Firebase valido.");
+    return;
+  }
+
+  Serial.println("[MANUAL] Captura manual solicitada desde dashboard.");
+
+  camera_fb_t* fb = tomarFoto();
+  String storagePath = "capturas/manual_" + String(millis()) + ".jpg";
+
+  if (!fb) {
+    guardarAlarmaEnDatabase(0, "", storagePath, true, "captura_manual");
+    Serial.println("[MANUAL] No se pudo capturar. Evento guardado sin foto.");
+  } else {
+    String photoUrl = subirFotoAStorage(fb, storagePath);
+    esp_camera_fb_return(fb);
+
+    if (photoUrl != "") {
+      guardarAlarmaEnDatabase(0, photoUrl, storagePath, true, "captura_manual");
+      Serial.println("[MANUAL] Foto manual subida y guardada.");
+    } else {
+      guardarAlarmaEnDatabase(0, "", storagePath, true, "captura_manual");
+      Serial.println("[MANUAL] No se pudo subir la foto manual.");
+    }
+  }
+
+  if (camaraActiva) {
+    esp_camera_deinit();
+    camaraActiva = false;
+    Serial.println("[CAM] Camara liberada tras captura manual");
+  }
+}
+
+bool leerComandoCapturaManualPendiente() {
+  String compatAlarmaId = String(WEB_COMPAT_ALARMA_ID);
+  if (compatAlarmaId.length() == 0) return false;
+
+  WiFiClientSecure client;
+  configurarClienteSeguro(client);
+
+  HTTPClient http;
+  String dbBase = "https://" + String(FIREBASE_DATABASE_URL);
+  String url = dbBase + "/alarmas/" + compatAlarmaId + "/comandos/capturaManual.json";
+  String urlConAuth = construirUrlDbConAuth(url);
+
+  http.begin(client, urlConAuth);
+  http.setTimeout(10000);
+  http.setReuse(false);
+
+  int httpCode = http.GET();
+  if (httpCode != 200) {
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  if (payload.length() == 0 || payload == "null") {
+    return false;
+  }
+
+  DynamicJsonDocument doc(1024);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err || !doc.is<JsonObject>()) {
+    return false;
+  }
+
+  String estado = doc["estado"] | "";
+  return estado == "pendiente";
+}
+
+void actualizarEstadoComandoCaptura(const String& estado, const String& detalle) {
+  String compatAlarmaId = String(WEB_COMPAT_ALARMA_ID);
+  if (compatAlarmaId.length() == 0) return;
+
+  String dbBase = "https://" + String(FIREBASE_DATABASE_URL);
+  String base = dbBase + "/alarmas/" + compatAlarmaId + "/comandos/capturaManual";
+
+  putJsonEnDatabase(base + "/estado.json", "\"" + estado + "\"", "[CMD] estado");
+  putJsonEnDatabase(base + "/detalle.json", "\"" + detalle + "\"", "[CMD] detalle");
+  putJsonEnDatabase(base + "/actualizadoEn.json", "{\".sv\":\"timestamp\"}", "[CMD] timestamp");
+}
+
+void revisarComandoCapturaManual() {
+  const unsigned long intervaloMs = 1500;
+  unsigned long ahora = millis();
+  if ((ahora - ultimoChequeoComandoManual) < intervaloMs) {
+    return;
+  }
+  ultimoChequeoComandoManual = ahora;
+
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (!asegurarAutenticacionFirebase()) return;
+
+  if (!leerComandoCapturaManualPendiente()) {
+    return;
+  }
+
+  Serial.println("[CMD] Comando de captura manual detectado.");
+  actualizarEstadoComandoCaptura("procesando", "Capturando foto...");
+  procesarCapturaManual();
+  actualizarEstadoComandoCaptura("completado", "Captura manual registrada en historial");
 }

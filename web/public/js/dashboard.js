@@ -9,22 +9,34 @@ let puedeVerificarAuthPorEmail = null;
 const RETENCION_DIAS_HISTORIAL = 7;
 const RETENCION_MS_HISTORIAL = RETENCION_DIAS_HISTORIAL * 24 * 60 * 60 * 1000;
 const LIMPIEZA_RETENCION_INTERVALO_MS = 15 * 60 * 1000;
+const VENTANA_ONLINE_CAMARA_MS = 60000;
+const REFRESCO_SUAVE_MS = 5000;
 let ultimaLimpiezaRetencionMs = 0;
 let limpiezaRetencionEnCurso = false;
+let autoRefreshTimer = null;
 
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
 const alarmBanner = document.getElementById('alarm-banner');
 const dotCamera = document.getElementById('dot-camera');
 const statusCamera = document.getElementById('status-camera');
-const dotPir1 = document.getElementById('dot-pir-1');
-const dotPir2 = document.getElementById('dot-pir-2');
-const statusPir1 = document.getElementById('status-pir-1');
-const statusPir2 = document.getElementById('status-pir-2');
+const dotPirGeneral = document.getElementById('dot-pir-general');
+const statusPirGeneral = document.getElementById('status-pir-general');
+const btnPhotoNow = document.getElementById('btn-photo-now');
+const manualPhotoStatus = document.getElementById('manual-photo-status');
 
 // ---------- Notificaciones ----------
 function cerrarBanner() {
   alarmBanner.classList.remove('visible');
+}
+
+function setManualPhotoStatus(msg, tipo = 'normal') {
+  if (!manualPhotoStatus) return;
+  manualPhotoStatus.textContent = msg;
+  manualPhotoStatus.classList.remove('ok', 'error');
+  if (tipo === 'ok' || tipo === 'error') {
+    manualPhotoStatus.classList.add(tipo);
+  }
 }
 
 function mostrarBanner() {
@@ -130,6 +142,10 @@ async function intentarRecuperarAlarmaPorEmail(user) {
 // ---------- Protección de ruta + resolver a qué alarma pertenezco ----------
 auth.onAuthStateChanged(async (user) => {
   if (!user) {
+    if (autoRefreshTimer) {
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+    }
     window.location.href = 'index.html';
     return;
   }
@@ -169,6 +185,13 @@ auth.onAuthStateChanged(async (user) => {
   }
   iniciarNotificacionesPush();
   cargarAdminUid();
+  if (!autoRefreshTimer) {
+    autoRefreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refrescarDashboardSuave();
+      }
+    }, REFRESCO_SUAVE_MS);
+  }
 });
 
 // Cargar adminUid cuando alarmaId esté disponible
@@ -184,6 +207,167 @@ async function cargarAdminUid() {
     } catch (e) {
       console.warn('No se pudo ejecutar limpieza inicial de retencion:', e.message || e);
     }
+  }
+}
+
+function renderUsuariosLista(data) {
+  const usersList = document.getElementById('users-list');
+  if (!usersList) return;
+
+  usersList.innerHTML = '';
+
+  const usuariosPorEmail = new Map();
+  Object.entries(data || {}).forEach(([uid, u]) => {
+    const usuario = (u && typeof u === 'object') ? u : {};
+    const emailNorm = (usuario.email || uid).toLowerCase();
+    const actual = usuariosPorEmail.get(emailNorm);
+    const fechaNueva = Number(usuario.fechaAlta || 0);
+    const fechaActual = actual ? Number((actual.usuario && actual.usuario.fechaAlta) || 0) : -1;
+    if (!actual || fechaNueva >= fechaActual) {
+      usuariosPorEmail.set(emailNorm, { uid, usuario });
+    }
+  });
+
+  const total = usuariosPorEmail.size;
+  const allTitles = document.querySelectorAll('.section-title');
+  allTitles.forEach(t => {
+    if (t.textContent.startsWith('Usuarios')) {
+      t.textContent = `Usuarios de esta alarma (${total}/4)`;
+    }
+  });
+
+  Array.from(usuariosPorEmail.values()).forEach(({ uid, usuario }) => {
+    const nombre = usuario.nombre || usuario.displayName || `Usuario ${uid.slice(0, 6)}`;
+    const apellido = usuario.apellido || '';
+    const nombreCompleto = apellido ? `${nombre} ${apellido}` : nombre;
+    const email = usuario.email || uid;
+
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.style.gridTemplateColumns = '1fr auto';
+
+    const esUnoMismo = uid === miUid;
+
+    item.innerHTML = `
+      <div>
+        <div class="history-sensor">${nombreCompleto}${esUnoMismo ? ' (vos)' : ''}</div>
+        <div class="history-time">${email}</div>
+      </div>
+    `;
+
+    if (!esUnoMismo && miUid === adminUid) {
+      const btnEliminar = document.createElement('button');
+      btnEliminar.textContent = 'Eliminar';
+      btnEliminar.className = 'link-btn';
+      btnEliminar.style.color = 'var(--alert)';
+      btnEliminar.addEventListener('click', () => {
+        if (confirm(`¿Quitar a ${nombre} de esta alarma?`)) {
+          db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove();
+          db.ref('userAlarma/' + uid).remove();
+        }
+      });
+      item.appendChild(btnEliminar);
+    }
+
+    usersList.appendChild(item);
+  });
+}
+
+function renderHistorialLista(data) {
+  const historyList = document.getElementById('history-list');
+  const emptyState = document.getElementById('empty-state');
+  if (!historyList || !emptyState) return;
+
+  historyList.innerHTML = '';
+
+  if (!data) {
+    emptyState.style.display = 'block';
+    actualizarEstadoSensorPIR(dotPirGeneral, statusPirGeneral, null);
+    return;
+  }
+
+  const alarmas = Object.values(data)
+    .filter((a) => a && typeof a === 'object' && a.sensor !== undefined)
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  if (alarmas.length === 0) {
+    emptyState.style.display = 'block';
+    actualizarEstadoSensorPIR(dotPirGeneral, statusPirGeneral, null);
+    return;
+  }
+
+  emptyState.style.display = 'none';
+
+  const masReciente = alarmas[0].timestamp || 0;
+  if (ultimoTimestampVisto !== null && masReciente > ultimoTimestampVisto) {
+    mostrarBanner();
+    if (Notification.permission === 'granted') {
+      new Notification('🚨 ALARMA ACTIVADA', {
+        body: 'Movimiento detectado — Sensor PIR',
+        icon: '/icon-192.png',
+        requireInteraction: true
+      });
+    }
+  }
+  ultimoTimestampVisto = masReciente;
+
+  actualizarEstadoSensorPIR(dotPirGeneral, statusPirGeneral, masReciente);
+
+  alarmas.forEach((alarma) => {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    const esCapturaManual = (alarma.tipoEvento === 'captura_manual') || Number(alarma.sensor) === 0;
+    const tituloEvento = esCapturaManual ? 'Captura manual' : 'Sensor de movimiento';
+    const badgeEvento = esCapturaManual ? 'Captura' : 'Movimiento';
+    const detalleRuta = esCapturaManual && alarma.storagePath
+      ? `<div class="history-time">Guardado en: ${alarma.storagePath}</div>`
+      : '';
+
+    const thumb = alarma.photoUrl ? crearMiniaturaEvento(alarma) : document.createElement('div');
+    if (!alarma.photoUrl) {
+      thumb.className = 'history-thumb';
+    }
+
+    const info = document.createElement('div');
+    info.innerHTML = `
+      <div class="history-sensor">${tituloEvento}</div>
+      <div class="history-time">${formatearFecha(alarma.timestamp)}</div>
+      ${detalleRuta}
+    `;
+
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = badgeEvento;
+
+    if (alarma.photoUrl) {
+      thumb.addEventListener('click', () => {
+        abrirModal(thumb.src || alarma.photoUrl);
+      });
+    }
+
+    item.appendChild(thumb);
+    item.appendChild(info);
+    item.appendChild(badge);
+
+    historyList.appendChild(item);
+  });
+}
+
+async function refrescarDashboardSuave() {
+  if (!alarmaId || !miUid) return;
+
+  try {
+    const [estadoSnap, usuariosSnap, historialSnap] = await Promise.all([
+      db.ref('alarmas/' + alarmaId + '/estadoDispositivo').once('value'),
+      db.ref('alarmas/' + alarmaId + '/usuarios').once('value'),
+      db.ref('alarmas/' + alarmaId + '/historial').once('value')
+    ]);
+
+    actualizarEstadoDispositivoUI(estadoSnap.val());
+    renderUsuariosLista(usuariosSnap.val() || {});
+    renderHistorialLista(historialSnap.val() || {});
+  } catch (e) {
+    console.warn('No se pudo hacer refresco suave del dashboard:', e.message || e);
   }
 }
 
@@ -203,6 +387,36 @@ function obtenerPathStorageDesdeEvento(alarma) {
   } catch (_) {
     return '';
   }
+}
+
+function crearMiniaturaEvento(alarma) {
+  const img = document.createElement('img');
+  img.className = 'history-thumb';
+  img.alt = 'Foto de movimiento';
+
+  const srcInicial = (alarma && typeof alarma.photoUrl === 'string') ? alarma.photoUrl : '';
+  if (srcInicial) {
+    img.src = srcInicial;
+  }
+
+  img.addEventListener('error', async () => {
+    if (img.dataset.fallbackTried === '1') return;
+    img.dataset.fallbackTried = '1';
+
+    const storagePath = obtenerPathStorageDesdeEvento(alarma);
+    if (!storagePath) return;
+
+    try {
+      const url = await firebase.storage().ref().child(storagePath).getDownloadURL();
+      if (url && url !== img.src) {
+        img.src = url;
+      }
+    } catch (e) {
+      // Si tampoco resuelve por SDK, dejamos la miniatura en error.
+    }
+  });
+
+  return img;
 }
 
 async function eliminarFotoStoragePorEvento(alarma) {
@@ -335,17 +549,17 @@ function actualizarEstadoDispositivoUI(estado) {
   if (!statusCamera) return;
 
   if (!estado || typeof estado !== 'object') {
-    statusCamera.textContent = 'No conectada';
+    statusCamera.textContent = 'Sin conexion';
     setDotEstado(dotCamera, false);
     return;
   }
 
   const lastSeen = Number(estado.lastSeen || 0);
-  const online = !!lastSeen && (Date.now() - lastSeen) < 600000;
+  const online = !!lastSeen && (Date.now() - lastSeen) < VENTANA_ONLINE_CAMARA_MS;
   const camOk = online && estado.camaraOk === true;
 
   setDotEstado(dotCamera, camOk);
-  statusCamera.textContent = camOk ? 'Conectada' : 'No conectada';
+  statusCamera.textContent = camOk ? 'Conectada' : 'Sin conexion';
 }
 
 // Los PIR no tienen forma de "avisar" que están conectados: solo informan
@@ -391,6 +605,35 @@ function iniciarEscuchas() {
   escucharHistorial();
 }
 
+async function solicitarFotoManual() {
+  if (!alarmaId || !miUid) {
+    setManualPhotoStatus('No se pudo enviar: sesión no lista.', 'error');
+    return;
+  }
+
+  if (btnPhotoNow) btnPhotoNow.disabled = true;
+  setManualPhotoStatus('Enviando solicitud de foto...', 'normal');
+
+  try {
+    await db.ref('alarmas/' + alarmaId + '/comandos/capturaManual').set({
+      tipo: 'captura_manual',
+      solicitadoPor: miUid,
+      solicitadoEn: firebase.database.ServerValue.TIMESTAMP,
+      estado: 'pendiente'
+    });
+
+    setManualPhotoStatus('Solicitud enviada. Esperando que el dispositivo tome la foto.', 'ok');
+  } catch (e) {
+    setManualPhotoStatus('Error al enviar solicitud: ' + (e.message || e), 'error');
+  } finally {
+    if (btnPhotoNow) btnPhotoNow.disabled = false;
+  }
+}
+
+if (btnPhotoNow) {
+  btnPhotoNow.addEventListener('click', solicitarFotoManual);
+}
+
 function escucharEstadoDispositivo() {
   db.ref('alarmas/' + alarmaId + '/estadoDispositivo').on('value', (snapshot) => {
     actualizarEstadoDispositivoUI(snapshot.val());
@@ -400,76 +643,12 @@ function escucharEstadoDispositivo() {
 }
 
 function escucharUsuarios() {
-  const usersList = document.getElementById('users-list');
-
   db.ref('alarmas/' + alarmaId + '/usuarios').on('value', (snapshot) => {
     tieneErrorUsuarios = false;
     actualizarSyncAlert();
-
-    const data = snapshot.val() || {};
-    usersList.innerHTML = '';
-
-    // Evitar mostrar correos duplicados (toma el registro más reciente por email).
-    const usuariosPorEmail = new Map();
-    Object.entries(data).forEach(([uid, u]) => {
-      const usuario = (u && typeof u === 'object') ? u : {};
-      const emailNorm = (usuario.email || uid).toLowerCase();
-      const actual = usuariosPorEmail.get(emailNorm);
-      const fechaNueva = Number(usuario.fechaAlta || 0);
-      const fechaActual = actual ? Number((actual.usuario && actual.usuario.fechaAlta) || 0) : -1;
-      if (!actual || fechaNueva >= fechaActual) {
-        usuariosPorEmail.set(emailNorm, { uid, usuario });
-      }
-    });
-
-    const total = usuariosPorEmail.size;
-    const tituloUsuarios = document.querySelector('.section-title');
-    // Actualiza el título con el contador
-    const allTitles = document.querySelectorAll('.section-title');
-    allTitles.forEach(t => {
-      if (t.textContent.startsWith('Usuarios')) {
-        t.textContent = `Usuarios de esta alarma (${total}/4)`;
-      }
-    });
-
-    Array.from(usuariosPorEmail.values()).forEach(({ uid, usuario }) => {
-      const nombre = usuario.nombre || usuario.displayName || `Usuario ${uid.slice(0, 6)}`;
-      const apellido = usuario.apellido || '';
-      const nombreCompleto = apellido ? `${nombre} ${apellido}` : nombre;
-      const email = usuario.email || uid;
-
-      const item = document.createElement('div');
-      item.className = 'history-item';
-      item.style.gridTemplateColumns = '1fr auto';
-
-      const esUnoMismo = uid === miUid;
-
-      item.innerHTML = `
-        <div>
-          <div class="history-sensor">${nombreCompleto}${esUnoMismo ? ' (vos)' : ''}</div>
-          <div class="history-time">${email}</div>
-        </div>
-      `;
-
-      if (!esUnoMismo && miUid === adminUid) {
-        const btnEliminar = document.createElement('button');
-        btnEliminar.textContent = 'Eliminar';
-        btnEliminar.className = 'link-btn';
-        btnEliminar.style.color = 'var(--alert)';
-        btnEliminar.addEventListener('click', () => {
-          if (confirm(`¿Quitar a ${nombre} de esta alarma?`)) {
-            db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove();
-            db.ref('userAlarma/' + uid).remove();
-          }
-        });
-        item.appendChild(btnEliminar);
-      }
-
-      usersList.appendChild(item);
-    });
-
+    renderUsuariosLista(snapshot.val() || {});
     // Limpieza defensiva: elimina entradas en DB cuyo email ya no existe en Auth.
-    limpiarUsuariosHuerfanosEnSegundoPlano(data);
+    limpiarUsuariosHuerfanosEnSegundoPlano(snapshot.val() || {});
   }, () => {
     tieneErrorUsuarios = true;
     actualizarSyncAlert();
@@ -528,9 +707,6 @@ async function limpiarUsuariosHuerfanosEnSegundoPlano(usuariosData) {
 }
 
 function escucharHistorial() {
-  const historyList = document.getElementById('history-list');
-  const emptyState = document.getElementById('empty-state');
-
   const alarmasRef = db.ref('alarmas/' + alarmaId + '/historial')
     .orderByChild('timestamp')
     .limitToLast(100);
@@ -538,80 +714,8 @@ function escucharHistorial() {
   alarmasRef.on('value', (snapshot) => {
     tieneErrorHistorial = false;
     actualizarSyncAlert();
-
-    const data = snapshot.val();
-    historyList.innerHTML = '';
-
-    limpiarHistorialAntiguoEnSegundoPlano(data || {});
-
-    if (!data) {
-      emptyState.style.display = 'block';
-      actualizarEstadoSensorPIR(dotPir1, statusPir1, null);
-      actualizarEstadoSensorPIR(dotPir2, statusPir2, null);
-      return;
-    }
-
-    emptyState.style.display = 'none';
-
-    const alarmas = Object.values(data)
-      .filter((a) => a && typeof a === 'object' && a.sensor !== undefined)
-      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-    if (alarmas.length === 0) {
-      emptyState.style.display = 'block';
-      actualizarEstadoSensorPIR(dotPir1, statusPir1, null);
-      actualizarEstadoSensorPIR(dotPir2, statusPir2, null);
-      return;
-    }
-
-    // Detectar si hay un evento nuevo (más reciente que el último visto)
-    const masReciente = alarmas[0].timestamp || 0;
-    if (ultimoTimestampVisto !== null && masReciente > ultimoTimestampVisto) {
-      mostrarBanner();
-      // Notificación nativa del navegador (si la página está en segundo plano)
-      if (Notification.permission === 'granted') {
-        new Notification('🚨 ALARMA ACTIVADA', {
-          body: `Movimiento detectado — Sensor ${alarmas[0].sensor}`,
-          icon: '/icon-192.png',
-          requireInteraction: true
-        });
-      }
-    }
-    ultimoTimestampVisto = masReciente;
-
-    // Actualizar estado de cada PIR según la última vez que disparó
-    const ultimaPorSensor = {};
-    alarmas.forEach((a) => {
-      if (!ultimaPorSensor[a.sensor]) ultimaPorSensor[a.sensor] = a.timestamp;
-    });
-    actualizarEstadoSensorPIR(dotPir1, statusPir1, ultimaPorSensor[1]);
-    actualizarEstadoSensorPIR(dotPir2, statusPir2, ultimaPorSensor[2]);
-
-    alarmas.forEach((alarma) => {
-      const item = document.createElement('div');
-      item.className = 'history-item';
-
-      const foto = alarma.photoUrl
-        ? `<img class="history-thumb" src="${alarma.photoUrl}" alt="Foto sensor ${alarma.sensor}">`
-        : `<div class="history-thumb"></div>`;
-
-      item.innerHTML = `
-        ${foto}
-        <div>
-          <div class="history-sensor">Sensor ${alarma.sensor}</div>
-          <div class="history-time">${formatearFecha(alarma.timestamp)}</div>
-        </div>
-        <span class="badge">Movimiento</span>
-      `;
-
-      if (alarma.photoUrl) {
-        item.querySelector('.history-thumb').addEventListener('click', () => {
-          abrirModal(alarma.photoUrl);
-        });
-      }
-
-      historyList.appendChild(item);
-    });
+    limpiarHistorialAntiguoEnSegundoPlano(snapshot.val() || {});
+    renderHistorialLista(snapshot.val() || {});
   }, () => {
     tieneErrorHistorial = true;
     actualizarSyncAlert();

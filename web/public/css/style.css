@@ -259,6 +259,54 @@ main {
   margin-bottom: 28px;
 }
 
+.action-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.action-card {
+  background: linear-gradient(150deg, rgba(20, 24, 34, 0.95), rgba(27, 33, 48, 0.92));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+}
+
+.action-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.action-help {
+  margin: 8px 0 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.action-btn {
+  width: auto;
+  margin-top: 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+
+.action-status {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.action-status.ok {
+  color: #8ce0d3;
+}
+
+.action-status.error {
+  color: #ff8e87;
+}
+
 .sensor-card {
   background: linear-gradient(150deg, rgba(20, 24, 34, 0.95), rgba(27, 33, 48, 0.92));
   border: 1px solid var(--border);
@@ -436,6 +484,7 @@ main {
   }
 
   .sensor-row { grid-template-columns: 1fr; }
+  .action-row { grid-template-columns: 1fr; }
   .history-item { grid-template-columns: 48px 1fr; }
   .history-item .badge { grid-column: 1 / -1; justify-self: start; }
   .history-thumb { width: 48px; height: 48px; }

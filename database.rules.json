@@ -34,6 +34,13 @@
         "estadoDispositivo": {
           ".read": "auth != null && root.child('userAlarma').child(auth.uid).val() === $alarmaId",
           ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid)"
+        },
+        "comandos": {
+          ".read": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists())",
+          ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists())",
+          "capturaManual": {
+            ".validate": "newData.hasChildren(['estado'])"
+          }
         }
       }
     }
