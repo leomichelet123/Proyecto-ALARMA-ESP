@@ -3,6 +3,18 @@
  * - 2 sensores PIR (HC-SR501) digitales
  * - Al detectar movimiento: saca foto, la sube a Firebase Storage
  *   y guarda un registro en Firebase Realtime Database
+ *
+ * FIXES APLICADOS:
+ * 1) tomarFoto(): se descartan los primeros frames tras inicializar
+ *    la camara para evitar fotos negras/vacias (el sensor necesita
+ *    unos frames para calibrar exposicion y balance de blancos).
+ * 2) leerComandoCapturaManualPendiente(): ahora loguea el codigo HTTP
+ *    de error y fuerza reautenticacion si el token vencio (401), en
+ *    vez de fallar en silencio como si no hubiera comando pendiente.
+ * 3) actualizarEstadoComandoCaptura(): se unifico en una sola llamada
+ *    PATCH (antes eran 3 PUT = 3 handshakes TLS completos por comando).
+ * 4) Intervalo de polling de comandos subido de 1500ms a 3000ms para
+ *    darle mas aire a la placa entre handshakes TLS.
  */
 
 #include <WiFi.h>
@@ -347,6 +359,18 @@ camera_fb_t* tomarFoto() {
     }
     camaraActiva = true;
     camaraInicializadaOk = true;
+
+    // FIX: descartar los primeros frames. Recien inicializado el sensor,
+    // la exposicion y el balance de blancos todavia no estabilizaron y
+    // el primer frame suele salir negro o corrupto.
+    Serial.println("[CAM] Descartando frames iniciales (estabilizacion)");
+    for (int i = 0; i < 3; i++) {
+      camera_fb_t* descarte = esp_camera_fb_get();
+      if (descarte) {
+        esp_camera_fb_return(descarte);
+      }
+      delay(50);
+    }
   }
 
   Serial.println("[CAM] Capturando foto");
@@ -467,6 +491,33 @@ bool putJsonEnDatabase(const String& url, const String& body, const String& etiq
   http.addHeader("Content-Type", "application/json");
 
   int httpCode = http.PUT(body);
+  if (httpCode == 200) {
+    Serial.println(etiqueta + " OK");
+    http.end();
+    return true;
+  }
+
+  Serial.println(etiqueta + " ERROR");
+  Serial.printf("Error HTTP: %d\n", httpCode);
+  Serial.println(http.getString());
+  http.end();
+  return false;
+}
+
+// FIX: nueva funcion generica para PATCH (actualiza varios campos en una
+// sola llamada HTTP en vez de necesitar un PUT por campo).
+bool patchJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
+  WiFiClientSecure client;
+  configurarClienteSeguro(client);
+
+  HTTPClient http;
+  String urlConAuth = construirUrlDbConAuth(url);
+  http.begin(client, urlConAuth);
+  http.setTimeout(15000);
+  http.setReuse(false);
+  http.addHeader("Content-Type", "application/json");
+
+  int httpCode = http.PATCH(body);
   if (httpCode == 200) {
     Serial.println(etiqueta + " OK");
     http.end();
@@ -778,6 +829,14 @@ bool leerComandoCapturaManualPendiente() {
 
   int httpCode = http.GET();
   if (httpCode != 200) {
+    // FIX: antes esto fallaba en silencio (devolvia false como si no
+    // hubiera comando pendiente). Ahora logueamos el error y, si es un
+    // 401 (token vencido), forzamos reautenticacion en el proximo ciclo.
+    Serial.printf("[CMD] GET comando fallo, HTTP=%d\n", httpCode);
+    if (httpCode == 401 || httpCode == 403) {
+      Serial.println("[CMD] Token invalido/vencido, se forzara reautenticacion");
+      idToken = "";
+    }
     http.end();
     return false;
   }
@@ -804,15 +863,24 @@ void actualizarEstadoComandoCaptura(const String& estado, const String& detalle)
   if (compatAlarmaId.length() == 0) return;
 
   String dbBase = "https://" + String(FIREBASE_DATABASE_URL);
-  String base = dbBase + "/alarmas/" + compatAlarmaId + "/comandos/capturaManual";
+  // FIX: antes esto eran 3 PUT (estado, detalle, timestamp), es decir 3
+  // handshakes TLS completos por comando. Ahora es un unico PATCH que
+  // actualiza los 3 campos en una sola conexion HTTPS.
+  String url = dbBase + "/alarmas/" + compatAlarmaId + "/comandos/capturaManual.json";
 
-  putJsonEnDatabase(base + "/estado.json", "\"" + estado + "\"", "[CMD] estado");
-  putJsonEnDatabase(base + "/detalle.json", "\"" + detalle + "\"", "[CMD] detalle");
-  putJsonEnDatabase(base + "/actualizadoEn.json", "{\".sv\":\"timestamp\"}", "[CMD] timestamp");
+  String body = "{";
+  body += "\"estado\":\"" + estado + "\",";
+  body += "\"detalle\":\"" + detalle + "\",";
+  body += "\"actualizadoEn\":{\".sv\":\"timestamp\"}";
+  body += "}";
+
+  patchJsonEnDatabase(url, body, "[CMD] estado");
 }
 
 void revisarComandoCapturaManual() {
-  const unsigned long intervaloMs = 1500;
+  // FIX: intervalo subido de 1500ms a 3000ms para reducir la frecuencia
+  // de handshakes TLS y darle mas margen a la placa.
+  const unsigned long intervaloMs = 3000;
   unsigned long ahora = millis();
   if ((ahora - ultimoChequeoComandoManual) < intervaloMs) {
     return;
