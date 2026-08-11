@@ -58,6 +58,8 @@ void configurarClienteSeguro(WiFiClientSecure& client);
 void probarHowsMySSL();
 void esperarConMillis(unsigned long tiempoMs);
 bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos = 3);
+void encenderFlashManual();
+void apagarFlashManual();
 
 void setup() {
   Serial.begin(115200);
@@ -74,6 +76,10 @@ void setup() {
   Serial.println("[BOOT] Configurando pines PIR");
   // Modo pulsador: pin en LOW estable y sube a HIGH al aplicar 3.3V.
   pinMode(PIR1_PIN, INPUT_PULLDOWN);
+#if FLASH_MANUAL_HABILITADO
+  pinMode(FLASH_LED_PIN, OUTPUT);
+  digitalWrite(FLASH_LED_PIN, LOW);
+#endif
 
   Serial.println("[BOOT] Iniciando WiFi");
   conectarWiFi();
@@ -694,6 +700,21 @@ void esperarConMillis(unsigned long tiempoMs) {
   }
 }
 
+void encenderFlashManual() {
+#if FLASH_MANUAL_HABILITADO
+  digitalWrite(FLASH_LED_PIN, HIGH);
+  if (FLASH_PRECAP_MS > 0) {
+    esperarConMillis(FLASH_PRECAP_MS);
+  }
+#endif
+}
+
+void apagarFlashManual() {
+#if FLASH_MANUAL_HABILITADO
+  digitalWrite(FLASH_LED_PIN, LOW);
+#endif
+}
+
 bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos) {
   if (WiFi.status() != WL_CONNECTED) {
     return false;
@@ -862,7 +883,9 @@ bool procesarCapturaManual(String& detalleResultado) {
 
   for (int intento = 1; intento <= maxIntentos && !fotoSubidaOk; intento++) {
     Serial.printf("[MANUAL] Intento %d/%d de captura/subida manual\n", intento, maxIntentos);
+    encenderFlashManual();
     camera_fb_t* fb = tomarFoto();
+    apagarFlashManual();
     String storagePath = "capturas/manual_" + String(millis()) + "_i" + String(intento) + ".jpg";
 
     if (!fb) {
@@ -924,6 +947,8 @@ bool procesarCapturaManual(String& detalleResultado) {
     camaraActiva = false;
     Serial.println("[CAM] Camara liberada tras captura manual");
   }
+
+  apagarFlashManual();
 
   return true;
 }
