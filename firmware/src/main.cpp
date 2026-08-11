@@ -9,6 +9,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <SPIFFS.h>
 #include "esp_camera.h"
 #include "camera_pins.h"
 #include "config.h"
@@ -30,6 +31,11 @@ unsigned long ultimoPulsoPIR1 = 0;
 unsigned long inicioLowPIR1 = 0;
 unsigned long inicioHighPIR1 = 0;
 bool sensorPIR1Armado = true;
+unsigned long ultimoChequeoSincronizacionOffline = 0;
+
+const char* OFFLINE_QUEUE_FILE = "/offline_queue.txt";
+const int MAX_ALARMAS_OFFLINE = 2;
+const int MAX_FOTOS_POR_ALARMA_OFFLINE = 3;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
@@ -60,6 +66,20 @@ void esperarConMillis(unsigned long tiempoMs);
 bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos = 3);
 void encenderFlashManual();
 void apagarFlashManual();
+bool inicializarAlmacenamientoOffline();
+int contarAlarmasOfflinePendientes();
+String generarIdEventoOffline(int sensorId, const String& tipoEvento);
+bool escribirArchivoSPIFFS(const String& ruta, const uint8_t* datos, size_t longitud);
+bool guardarMetaEventoOffline(const String& eventId, int sensorId, bool importante, const String& tipoEvento);
+bool agregarEventoAColaOffline(const String& eventId);
+bool obtenerPrimerEventoColaOffline(String& eventId);
+bool eliminarPrimerEventoColaOffline();
+bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento);
+bool sincronizarColaOffline();
+bool sincronizarEventoOffline(const String& eventId);
+bool leerMetaEventoOffline(const String& eventId, DynamicJsonDocument& meta);
+String rutaMetaOffline(const String& eventId);
+String rutaFotoOffline(const String& eventId, int indiceFoto);
 
 void setup() {
   Serial.begin(115200);
@@ -80,6 +100,10 @@ void setup() {
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
 #endif
+
+  if (!inicializarAlmacenamientoOffline()) {
+    Serial.println("[BOOT] No se pudo iniciar SPIFFS. El modo offline quedara deshabilitado.");
+  }
 
   Serial.println("[BOOT] Iniciando WiFi");
   conectarWiFi();
@@ -172,6 +196,10 @@ void loop() {
   }
 
   revisarComandoCapturaManual();
+  if (WiFi.status() == WL_CONNECTED && (ahora - ultimoChequeoSincronizacionOffline) >= 10000) {
+    ultimoChequeoSincronizacionOffline = ahora;
+    sincronizarColaOffline();
+  }
   publicarEstadoDispositivo(false);
 
   bool highConfirmado = (estadoPIR1 == HIGH) && (inicioHighPIR1 > 0) &&
@@ -742,6 +770,286 @@ bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos) {
   return false;
 }
 
+bool inicializarAlmacenamientoOffline() {
+  if (!SPIFFS.begin(true)) {
+    return false;
+  }
+
+  if (!SPIFFS.exists(OFFLINE_QUEUE_FILE)) {
+    File queue = SPIFFS.open(OFFLINE_QUEUE_FILE, FILE_WRITE);
+    if (queue) {
+      queue.close();
+    }
+  }
+
+  return true;
+}
+
+String generarIdEventoOffline(int sensorId, const String& tipoEvento) {
+  String id = String(millis()) + "_" + String(sensorId) + "_" + String((uint32_t)esp_random(), HEX);
+  if (tipoEvento.length() > 0) {
+    id += "_" + tipoEvento;
+  }
+  return id;
+}
+
+String rutaMetaOffline(const String& eventId) {
+  return "/off_" + eventId + "_meta.json";
+}
+
+String rutaFotoOffline(const String& eventId, int indiceFoto) {
+  return "/off_" + eventId + "_p" + String(indiceFoto) + ".jpg";
+}
+
+bool escribirArchivoSPIFFS(const String& ruta, const uint8_t* datos, size_t longitud) {
+  File archivo = SPIFFS.open(ruta, FILE_WRITE);
+  if (!archivo) {
+    return false;
+  }
+
+  size_t escritos = archivo.write(datos, longitud);
+  archivo.close();
+  return escritos == longitud;
+}
+
+int contarAlarmasOfflinePendientes() {
+  File cola = SPIFFS.open(OFFLINE_QUEUE_FILE, FILE_READ);
+  if (!cola) {
+    return 0;
+  }
+
+  int cantidad = 0;
+  while (cola.available()) {
+    String linea = cola.readStringUntil('\n');
+    linea.trim();
+    if (linea.length() > 0) {
+      cantidad++;
+    }
+  }
+
+  cola.close();
+  return cantidad;
+}
+
+bool guardarMetaEventoOffline(const String& eventId, int sensorId, bool importante, const String& tipoEvento) {
+  String rutaMeta = rutaMetaOffline(eventId);
+  DynamicJsonDocument doc(256);
+  doc["eventId"] = eventId;
+  doc["sensorId"] = sensorId;
+  doc["importante"] = importante;
+  doc["tipoEvento"] = tipoEvento;
+  doc["fotos"] = MAX_FOTOS_POR_ALARMA_OFFLINE;
+  doc["createdAtMs"] = millis();
+
+  File meta = SPIFFS.open(rutaMeta, FILE_WRITE);
+  if (!meta) {
+    return false;
+  }
+
+  if (serializeJson(doc, meta) == 0) {
+    meta.close();
+    return false;
+  }
+
+  meta.close();
+  return true;
+}
+
+bool agregarEventoAColaOffline(const String& eventId) {
+  if (contarAlarmasOfflinePendientes() >= MAX_ALARMAS_OFFLINE) {
+    return false;
+  }
+
+  File cola = SPIFFS.open(OFFLINE_QUEUE_FILE, FILE_APPEND);
+  if (!cola) {
+    return false;
+  }
+
+  cola.println(eventId);
+  cola.close();
+  return true;
+}
+
+bool obtenerPrimerEventoColaOffline(String& eventId) {
+  File cola = SPIFFS.open(OFFLINE_QUEUE_FILE, FILE_READ);
+  if (!cola) {
+    return false;
+  }
+
+  while (cola.available()) {
+    String linea = cola.readStringUntil('\n');
+    linea.trim();
+    if (linea.length() > 0) {
+      eventId = linea;
+      cola.close();
+      return true;
+    }
+  }
+
+  cola.close();
+  return false;
+}
+
+bool eliminarPrimerEventoColaOffline() {
+  File cola = SPIFFS.open(OFFLINE_QUEUE_FILE, FILE_READ);
+  if (!cola) {
+    return false;
+  }
+
+  String restante = "";
+  bool saltoPrimera = false;
+  while (cola.available()) {
+    String linea = cola.readStringUntil('\n');
+    linea.trim();
+    if (linea.length() == 0) {
+      continue;
+    }
+    if (!saltoPrimera) {
+      saltoPrimera = true;
+      continue;
+    }
+    restante += linea + "\n";
+  }
+  cola.close();
+
+  File salida = SPIFFS.open(OFFLINE_QUEUE_FILE, FILE_WRITE);
+  if (!salida) {
+    return false;
+  }
+  salida.print(restante);
+  salida.close();
+  return true;
+}
+
+bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento) {
+  if (contarAlarmasOfflinePendientes() >= MAX_ALARMAS_OFFLINE) {
+    Serial.println("[OFFLINE] Cola llena, no se puede guardar otra alarma sin internet.");
+    return false;
+  }
+
+  String eventId = generarIdEventoOffline(sensorId, tipoEvento);
+
+  if (!guardarMetaEventoOffline(eventId, sensorId, importante, tipoEvento)) {
+    return false;
+  }
+
+  for (int i = 1; i <= MAX_FOTOS_POR_ALARMA_OFFLINE; i++) {
+    Serial.printf("[OFFLINE] Capturando foto %d/%d para evento local\n", i, MAX_FOTOS_POR_ALARMA_OFFLINE);
+    encenderFlashManual();
+    camera_fb_t* fb = tomarFoto();
+    apagarFlashManual();
+    if (!fb) {
+      Serial.println("[OFFLINE] No se pudo capturar foto para guardar localmente.");
+      return false;
+    }
+
+    String rutaFoto = rutaFotoOffline(eventId, i);
+    bool ok = escribirArchivoSPIFFS(rutaFoto, fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+    if (!ok) {
+      Serial.println("[OFFLINE] No se pudo escribir la foto en SPIFFS.");
+      return false;
+    }
+  }
+
+  apagarFlashManual();
+
+  if (!agregarEventoAColaOffline(eventId)) {
+    Serial.println("[OFFLINE] No se pudo agregar el evento a la cola.");
+    return false;
+  }
+
+  Serial.printf("[OFFLINE] Evento guardado localmente: %s\n", eventId.c_str());
+  return true;
+}
+
+bool leerMetaEventoOffline(const String& eventId, DynamicJsonDocument& meta) {
+  String rutaMeta = rutaMetaOffline(eventId);
+  File archivo = SPIFFS.open(rutaMeta, FILE_READ);
+  if (!archivo) {
+    return false;
+  }
+
+  DeserializationError err = deserializeJson(meta, archivo);
+  archivo.close();
+  return !err;
+}
+
+bool sincronizarEventoOffline(const String& eventId) {
+  DynamicJsonDocument meta(256);
+  if (!leerMetaEventoOffline(eventId, meta)) {
+    Serial.printf("[OFFLINE] No se pudo leer meta de %s\n", eventId.c_str());
+    return false;
+  }
+
+  int sensorId = meta["sensorId"] | 1;
+  bool importante = meta["importante"] | false;
+  String tipoEvento = meta["tipoEvento"] | "movimiento";
+
+  for (int i = 1; i <= MAX_FOTOS_POR_ALARMA_OFFLINE; i++) {
+    String rutaFoto = rutaFotoOffline(eventId, i);
+    File foto = SPIFFS.open(rutaFoto, FILE_READ);
+    if (!foto) {
+      Serial.printf("[OFFLINE] Falta foto %d de %s\n", i, eventId.c_str());
+      return false;
+    }
+
+    size_t lenFoto = foto.size();
+    uint8_t* buffer = (uint8_t*)malloc(lenFoto);
+    if (!buffer) {
+      foto.close();
+      return false;
+    }
+
+    size_t leidos = foto.read(buffer, lenFoto);
+    foto.close();
+    if (leidos != lenFoto) {
+      free(buffer);
+      return false;
+    }
+
+    String storagePath = "offline/" + eventId + "/photo_" + String(i) + ".jpg";
+    String photoUrl = subirBytesAStorage(buffer, lenFoto, storagePath);
+    free(buffer);
+
+    if (photoUrl == "") {
+      Serial.printf("[OFFLINE] Fallo la subida de foto %d de %s\n", i, eventId.c_str());
+      return false;
+    }
+
+    guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, importante, tipoEvento);
+  }
+
+  SPIFFS.remove(rutaMetaOffline(eventId));
+  for (int i = 1; i <= MAX_FOTOS_POR_ALARMA_OFFLINE; i++) {
+    SPIFFS.remove(rutaFotoOffline(eventId, i));
+  }
+  Serial.printf("[OFFLINE] Evento sincronizado: %s\n", eventId.c_str());
+  return true;
+}
+
+bool sincronizarColaOffline() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  if (!asegurarAutenticacionFirebase()) {
+    return false;
+  }
+
+  String eventId;
+  while (obtenerPrimerEventoColaOffline(eventId)) {
+    if (!sincronizarEventoOffline(eventId)) {
+      Serial.printf("[OFFLINE] Se detuvo la sincronizacion en %s\n", eventId.c_str());
+      return false;
+    }
+
+    eliminarPrimerEventoColaOffline();
+  }
+
+  return true;
+}
+
 void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento) {
   // ".sv":"timestamp" le pide a Firebase que ponga la hora real del
   // servidor al momento de guardar, en vez de usar millis() (que solo
@@ -780,12 +1088,24 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String&
 // ==================== Lógica principal de alarma ====================
 void procesarAlarma(int sensorId) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[ALARM] Sin WiFi, no se puede procesar la alarma en Firebase.");
+    Serial.println("[ALARM] Sin WiFi. Guardando alarma localmente para sincronizar luego.");
+    guardarAlarmaOffline(sensorId, false, "movimiento");
     return;
   }
 
   if (!asegurarAutenticacionFirebase()) {
-    Serial.println("[ALARM] Sin token Firebase valido, se cancela el envio de la alarma.");
+    Serial.println("[ALARM] Sin token Firebase valido. Guardando alarma localmente para sincronizar luego.");
+    guardarAlarmaOffline(sensorId, false, "movimiento");
+    return;
+  }
+
+  // WiFi conectado no siempre implica salida real a internet.
+  // Si no hay DNS para RTDB/Storage, tratamos el evento como offline.
+  bool dnsRtdbOk = asegurarDnsHost(FIREBASE_DATABASE_URL, "RTDB", 1);
+  bool dnsStorageOk = asegurarDnsHost("firebasestorage.googleapis.com", "STORAGE", 1);
+  if (!dnsRtdbOk || !dnsStorageOk) {
+    Serial.println("[ALARM] Sin salida a internet (DNS), guardando alarma localmente.");
+    guardarAlarmaOffline(sensorId, false, "movimiento");
     return;
   }
 
@@ -879,60 +1199,52 @@ bool procesarCapturaManual(String& detalleResultado) {
   Serial.println("[MANUAL] Captura manual solicitada desde dashboard.");
 
   bool fotoSubidaOk = false;
-  const int maxIntentos = 3;
+  const int maxIntentosSubida = 3;
+  encenderFlashManual();
+  camera_fb_t* fb = tomarFoto();
+  apagarFlashManual();
 
-  for (int intento = 1; intento <= maxIntentos && !fotoSubidaOk; intento++) {
-    Serial.printf("[MANUAL] Intento %d/%d de captura/subida manual\n", intento, maxIntentos);
-    encenderFlashManual();
-    camera_fb_t* fb = tomarFoto();
-    apagarFlashManual();
-    String storagePath = "capturas/manual_" + String(millis()) + "_i" + String(intento) + ".jpg";
-
-    if (!fb) {
-      Serial.println("[MANUAL] No se pudo capturar la foto en este intento.");
-      if (intento < maxIntentos) {
-        esperarConMillis(120);
-      }
-      continue;
-    }
-
+  if (fb) {
     size_t lenFoto = fb->len;
     uint8_t* copiaFoto = (uint8_t*)malloc(lenFoto);
-    if (!copiaFoto) {
+    if (copiaFoto) {
+      memcpy(copiaFoto, fb->buf, lenFoto);
+      esp_camera_fb_return(fb);
+
+      // Baja consumo/uso de memoria durante TLS para reducir cuelgues en upload manual.
+      if (camaraActiva) {
+        esp_camera_deinit();
+        camaraActiva = false;
+        Serial.println("[CAM] Camara liberada antes de subir captura manual");
+      }
+
+      String storagePath = "capturas/manual_" + String(millis()) + "_i1.jpg";
+      for (int intentoSubida = 1; intentoSubida <= maxIntentosSubida; intentoSubida++) {
+        Serial.printf("[MANUAL] Intento %d/%d de subida manual\n", intentoSubida, maxIntentosSubida);
+        String photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath);
+        if (photoUrl != "") {
+          guardarAlarmaEnDatabase(0, photoUrl, storagePath, true, "captura_manual");
+          Serial.println("[MANUAL] Foto manual subida y guardada.");
+          fotoSubidaOk = true;
+          detalleResultado = "Captura manual registrada en historial";
+          break;
+        }
+
+        Serial.println("[MANUAL] No se pudo subir la foto manual en este intento.");
+        if (intentoSubida < maxIntentosSubida) {
+          idToken = "";
+          asegurarAutenticacionFirebase();
+          esperarConMillis(180);
+        }
+      }
+
+      free(copiaFoto);
+    } else {
       Serial.println("[MANUAL] Sin memoria para copiar la foto manual.");
       esp_camera_fb_return(fb);
-      if (intento < maxIntentos) {
-        esperarConMillis(120);
-      }
-      continue;
     }
-
-    memcpy(copiaFoto, fb->buf, lenFoto);
-    esp_camera_fb_return(fb);
-
-    // Baja consumo/uso de memoria durante TLS para reducir cuelgues en upload manual.
-    if (camaraActiva) {
-      esp_camera_deinit();
-      camaraActiva = false;
-      Serial.println("[CAM] Camara liberada antes de subir captura manual");
-    }
-
-    String photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath);
-    free(copiaFoto);
-
-    if (photoUrl != "") {
-      guardarAlarmaEnDatabase(0, photoUrl, storagePath, true, "captura_manual");
-      Serial.println("[MANUAL] Foto manual subida y guardada.");
-      fotoSubidaOk = true;
-      detalleResultado = "Captura manual registrada en historial";
-    } else {
-      Serial.println("[MANUAL] No se pudo subir la foto manual en este intento.");
-      if (intento < maxIntentos) {
-        idToken = "";
-        asegurarAutenticacionFirebase();
-        esperarConMillis(180);
-      }
-    }
+  } else {
+    Serial.println("[MANUAL] No se pudo capturar la foto manual.");
   }
 
   if (!fotoSubidaOk) {
