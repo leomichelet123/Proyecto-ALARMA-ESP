@@ -227,19 +227,11 @@ function renderUsuariosLista(data) {
 
   usersList.innerHTML = '';
 
-  const usuariosPorEmail = new Map();
-  Object.entries(data || {}).forEach(([uid, u]) => {
-    const usuario = (u && typeof u === 'object') ? u : {};
-    const emailNorm = (usuario.email || uid).toLowerCase();
-    const actual = usuariosPorEmail.get(emailNorm);
-    const fechaNueva = Number(usuario.fechaAlta || 0);
-    const fechaActual = actual ? Number((actual.usuario && actual.usuario.fechaAlta) || 0) : -1;
-    if (!actual || fechaNueva >= fechaActual) {
-      usuariosPorEmail.set(emailNorm, { uid, usuario });
-    }
+  const usuarios = Object.entries(data || {}).filter(([uid, u]) => {
+    return !!uid && u && typeof u === 'object';
   });
 
-  const total = usuariosPorEmail.size;
+  const total = usuarios.length;
   const allTitles = document.querySelectorAll('.section-title');
   allTitles.forEach(t => {
     if (t.textContent.startsWith('Usuarios')) {
@@ -247,7 +239,7 @@ function renderUsuariosLista(data) {
     }
   });
 
-  Array.from(usuariosPorEmail.values()).forEach(({ uid, usuario }) => {
+  usuarios.forEach(([uid, usuario]) => {
     const nombre = usuario.nombre || usuario.displayName || `Usuario ${uid.slice(0, 6)}`;
     const apellido = usuario.apellido || '';
     const nombreCompleto = apellido ? `${nombre} ${apellido}` : nombre;
@@ -517,7 +509,8 @@ async function liberarCupoAlCerrarSesion() {
 }
 
 document.getElementById('btn-logout').addEventListener('click', async () => {
-  await liberarCupoAlCerrarSesion();
+  // Cerrar sesion no debe borrar la vinculacion del usuario a la alarma.
+  // La baja explicita de miembros se hace desde el boton "Eliminar" (admin).
   auth.signOut().then(() => {
     window.location.href = 'index.html';
   });

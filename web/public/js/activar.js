@@ -57,7 +57,8 @@ function traducirError(codigo) {
     'auth/network-request-failed': 'Error de red. Revisá tu conexión e intentá de nuevo.',
     'PERMISSION_DENIED': 'Permiso denegado en Firebase. Revisá reglas/configuración.',
     'CODIGO_INVALIDO': 'El código de activación no es válido.',
-    'LIMITE_ALCANZADO': 'Esta alarma ya tiene el máximo de 4 usuarios.'
+    'LIMITE_ALCANZADO': 'Esta alarma ya tiene el máximo de 4 usuarios.',
+    'NO_SE_PUDO_VINCULAR': 'No se pudo vincular la cuenta en este intento. Reintentá.'
   };
   return mensajes[codigo] || 'Ocurrió un error. Intentá de nuevo.';
 }
@@ -130,36 +131,53 @@ form.addEventListener('submit', async (e) => {
     // 2) Alarma fija para flujo actual de la web.
     const alarmaId = ALARMA_ID_FIJA;
 
-    // 3) Chequear miembros y evitar duplicados por email
-    const usuariosSnap = await db.ref('alarmas/' + alarmaId + '/usuarios').once('value');
-    const usuariosData = usuariosSnap.val() || {};
-    const cantidadActual = Object.keys(usuariosData).length;
+    // 3) Alta atomica por UID: evita sobreescrituras y respeta cupo maximo de 4.
+    const usuariosRef = db.ref('alarmas/' + alarmaId + '/usuarios');
+    let limiteAlcanzado = false;
+    let uidYaRegistrado = false;
 
-    const uidYaRegistrado = !!usuariosData[uid];
-    const emailNormalizado = (emailFinal || '').toLowerCase();
-    const existeMismoEmail = Object.values(usuariosData).some((u) => {
-      if (!u || typeof u !== 'object') return false;
-      return (u.email || '').toLowerCase() === emailNormalizado;
-    });
+    const tx = await usuariosRef.transaction((actual) => {
+      const usuarios = (actual && typeof actual === 'object') ? { ...actual } : {};
 
-    if (!uidYaRegistrado && !existeMismoEmail && cantidadActual >= MAX_USUARIOS) {
-      throw new Error('LIMITE_ALCANZADO');
-    }
+      if (usuarios[uid]) {
+        uidYaRegistrado = true;
+        return usuarios;
+      }
 
-    // 4) Registrar al usuario dentro de la alarma solo si no existe ya por UID o email
-    if (!uidYaRegistrado && !existeMismoEmail) {
-      await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).set({
+      const cantidadActual = Object.keys(usuarios).length;
+      if (cantidadActual >= MAX_USUARIOS) {
+        limiteAlcanzado = true;
+        return;
+      }
+
+      usuarios[uid] = {
         nombre: nombre,
         apellido: apellido,
         email: emailFinal,
         fechaAlta: firebase.database.ServerValue.TIMESTAMP
-      });
+      };
+      return usuarios;
+    });
+
+    if (!tx.committed) {
+      if (limiteAlcanzado) {
+        throw new Error('LIMITE_ALCANZADO');
+      }
+      throw new Error('NO_SE_PUDO_VINCULAR');
     }
 
-    // 5) Guardar primero el mapeo para cumplir reglas de adminUid
-    await db.ref('userAlarma/' + uid).set(alarmaId);
+    // 4) Guardar mapeo de cuenta -> alarma.
+    // Si falla y era una alta nueva, revertimos para no dejar perfiles arrastrados.
+    try {
+      await db.ref('userAlarma/' + uid).set(alarmaId);
+    } catch (e) {
+      if (!uidYaRegistrado) {
+        await db.ref('alarmas/' + alarmaId + '/usuarios/' + uid).remove().catch(() => {});
+      }
+      throw e;
+    }
 
-    // 6) Si es el primer usuario, intentar asignarlo como admin
+    // 5) Si es el primer usuario, intentar asignarlo como admin
     // (si falla por carrera, no bloquea el alta del usuario)
     const adminSnap = await db.ref('alarmas/' + alarmaId + '/adminUid').once('value');
     if (!adminSnap.val()) {
@@ -179,7 +197,7 @@ form.addEventListener('submit', async (e) => {
       await userCredential.user.delete().catch(() => {});
     }
 
-    if (err.message === 'CODIGO_INVALIDO' || err.message === 'LIMITE_ALCANZADO') {
+    if (err.message === 'CODIGO_INVALIDO' || err.message === 'LIMITE_ALCANZADO' || err.message === 'NO_SE_PUDO_VINCULAR') {
       mostrarError(traducirError(err.message));
     } else if (err.code) {
       mostrarError(traducirError(err.code));
