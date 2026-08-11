@@ -17,7 +17,6 @@
 String idToken = "";
 
 unsigned long ultimaAlarmaPIR1 = 0;
-unsigned long ultimaAlarmaPIR2 = 0;
 unsigned long ultimoHeartbeat = 0;
 unsigned long ultimaAlarmaTest = 0;
 unsigned long ultimoEstadoDispositivo = 0;
@@ -26,9 +25,11 @@ unsigned long ultimoChequeoComandoManual = 0;
 bool camaraInicializadaOk = false;
 bool camaraActiva = false;
 int ultimoEstadoPIR1 = LOW;
-int ultimoEstadoPIR2 = LOW;
+int estadoAnteriorPIR1 = LOW;
 unsigned long ultimoPulsoPIR1 = 0;
-unsigned long ultimoPulsoPIR2 = 0;
+unsigned long inicioLowPIR1 = 0;
+unsigned long inicioHighPIR1 = 0;
+bool sensorPIR1Armado = true;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
@@ -37,9 +38,10 @@ bool asegurarAutenticacionFirebase();
 bool inicializarCamara();
 camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& storagePath);
+String subirBytesAStorage(const uint8_t* data, size_t len, const String& storagePath);
 void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento = "movimiento");
 void procesarAlarma(int sensorId);
-void procesarCapturaManual();
+bool procesarCapturaManual(String& detalleResultado);
 void revisarComandoCapturaManual();
 bool leerComandoCapturaManualPendiente();
 void actualizarEstadoComandoCaptura(const String& estado, const String& detalle);
@@ -54,6 +56,8 @@ void diagnosticarHostHttps(const char* host, const char* etiqueta);
 bool publicarEstadoDispositivoConReintento(const String& url, const String& body);
 void configurarClienteSeguro(WiFiClientSecure& client);
 void probarHowsMySSL();
+void esperarConMillis(unsigned long tiempoMs);
+bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos = 3);
 
 void setup() {
   Serial.begin(115200);
@@ -68,9 +72,8 @@ void setup() {
 #endif
 
   Serial.println("[BOOT] Configurando pines PIR");
-  // INPUT puro para no "arrastrar" salidas PIR debiles y mejorar deteccion real.
-  pinMode(PIR1_PIN, INPUT);
-  pinMode(PIR2_PIN, INPUT);
+  // Modo pulsador: pin en LOW estable y sube a HIGH al aplicar 3.3V.
+  pinMode(PIR1_PIN, INPUT_PULLDOWN);
 
   Serial.println("[BOOT] Iniciando WiFi");
   conectarWiFi();
@@ -134,34 +137,51 @@ void loop() {
   }
 
   int estadoPIR1 = PIR1_HABILITADO ? digitalRead(PIR1_PIN) : LOW;
-  int estadoPIR2 = PIR2_HABILITADO ? digitalRead(PIR2_PIN) : LOW;
-  ultimoEstadoPIR1 = estadoPIR1;
-  ultimoEstadoPIR2 = estadoPIR2;
-
   unsigned long ahoraPulso = millis();
+
+  // Armado inicial y rearmado: requiere LOW estable para evitar disparos espurios.
+  if (!sensorPIR1Armado && estadoPIR1 == LOW) {
+    if (inicioLowPIR1 == 0) {
+      inicioLowPIR1 = ahoraPulso;
+    } else if ((ahoraPulso - inicioLowPIR1) >= TIEMPO_LIBERACION_SENSOR_MS) {
+      sensorPIR1Armado = true;
+    }
+  }
+
+  ultimoEstadoPIR1 = estadoPIR1;
   if (estadoPIR1 == HIGH) {
     ultimoPulsoPIR1 = ahoraPulso;
-  }
-  if (estadoPIR2 == HIGH) {
-    ultimoPulsoPIR2 = ahoraPulso;
+    inicioLowPIR1 = 0;
+    if (inicioHighPIR1 == 0) {
+      inicioHighPIR1 = ahoraPulso;
+    }
+  } else {
+    inicioHighPIR1 = 0;
+    if (inicioLowPIR1 == 0) {
+      inicioLowPIR1 = ahoraPulso;
+    }
+    if (!sensorPIR1Armado && (ahoraPulso - inicioLowPIR1) >= TIEMPO_LIBERACION_SENSOR_MS) {
+      sensorPIR1Armado = true;
+    }
   }
 
-  publicarEstadoDispositivo(false);
   revisarComandoCapturaManual();
+  publicarEstadoDispositivo(false);
 
-  if (PIR1_HABILITADO && estadoPIR1 == HIGH && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
+  bool highConfirmado = (estadoPIR1 == HIGH) && (inicioHighPIR1 > 0) &&
+                        ((ahoraPulso - inicioHighPIR1) >= TIEMPO_CONFIRMACION_HIGH_MS);
+
+  if (sensorPIR1Armado && highConfirmado && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
     ultimaAlarmaPIR1 = ahora;
+    sensorPIR1Armado = false;
+    inicioHighPIR1 = 0;
     Serial.println(">>> Movimiento detectado: Sensor 1");
     procesarAlarma(1);
   }
 
-  if (PIR2_HABILITADO && estadoPIR2 == HIGH && (ahora - ultimaAlarmaPIR2) > TIEMPO_ENTRE_ALARMAS_MS) {
-    ultimaAlarmaPIR2 = ahora;
-    Serial.println(">>> Movimiento detectado: Sensor 2");
-    procesarAlarma(2);
-  }
+  estadoAnteriorPIR1 = estadoPIR1;
 
-  delay(80);
+  delay(20);
 }
 
 // ==================== WiFi ====================
@@ -226,6 +246,11 @@ void conectarWiFi() {
 // Usa la cuenta creada en Authentication para obtener un token que permite
 // escribir en la base de datos y en Storage, según las reglas de seguridad.
 bool autenticarDispositivo() {
+  if (!asegurarDnsHost("identitytoolkit.googleapis.com", "AUTH")) {
+    Serial.println("[AUTH] DNS no disponible para identitytoolkit.");
+    return false;
+  }
+
   String url = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + String(FIREBASE_API_KEY);
   String body = "{\"email\":\"" + String(FIREBASE_DEVICE_EMAIL) +
                 "\",\"password\":\"" + String(FIREBASE_DEVICE_PASSWORD) +
@@ -394,7 +419,12 @@ String generarTokenDescarga() {
 
 // ==================== Firebase Storage ====================
 // Sube la foto usando la REST API de Firebase Storage (Google Cloud Storage JSON API)
-String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
+String subirBytesAStorage(const uint8_t* data, size_t len, const String& nombreArchivo) {
+  if (!asegurarDnsHost("firebasestorage.googleapis.com", "STORAGE")) {
+    Serial.println("[STORAGE] DNS no disponible para Storage.");
+    return "";
+  }
+
   WiFiClientSecure client;
   configurarClienteSeguro(client);
 
@@ -406,11 +436,15 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
                "/o?uploadType=media&name=" + encodedName;
 
   http.begin(client, url);
+  // Evita que una subida trabada deje el comando manual en "procesando" infinito.
+  http.setTimeout(12000);
+  http.setReuse(false);
   http.addHeader("Content-Type", "image/jpeg");
   http.addHeader("Authorization", "Firebase " + idToken);
   http.addHeader("x-goog-meta-firebaseStorageDownloadTokens", downloadToken);
 
-  int httpCode = http.POST(fb->buf, fb->len);
+  Serial.printf("[STORAGE] Subiendo %u bytes a %s\n", (unsigned)len, nombreArchivo.c_str());
+  int httpCode = http.POST((uint8_t*)data, len);
 
   String photoUrl = "";
   if (httpCode == 200) {
@@ -429,8 +463,21 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
   return photoUrl;
 }
 
+String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
+  if (!fb || !fb->buf || fb->len == 0) {
+    return "";
+  }
+  return subirBytesAStorage(fb->buf, fb->len, nombreArchivo);
+}
+
 // ==================== Firebase Realtime Database ====================
 bool postJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
+  if (!asegurarDnsHost(FIREBASE_DATABASE_URL, "RTDB")) {
+    Serial.println(etiqueta + " ERROR");
+    Serial.println("Error HTTP: -1");
+    return false;
+  }
+
   WiFiClientSecure client;
   configurarClienteSeguro(client);
 
@@ -456,6 +503,12 @@ bool postJsonEnDatabase(const String& url, const String& body, const String& eti
 }
 
 bool putJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
+  if (!asegurarDnsHost(FIREBASE_DATABASE_URL, "RTDB")) {
+    Serial.println(etiqueta + " ERROR");
+    Serial.println("Error HTTP: -1");
+    return false;
+  }
+
   WiFiClientSecure client;
   configurarClienteSeguro(client);
 
@@ -509,11 +562,8 @@ void publicarEstadoDispositivo(bool forzar) {
   body += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
   body += "\"camaraOk\":" + String(camaraInicializadaOk ? "true" : "false") + ",";
   bool pir1Conectado = (ahora - ultimoPulsoPIR1) <= ventanaSensorConectadoMs;
-  bool pir2Conectado = PIR2_HABILITADO && ((ahora - ultimoPulsoPIR2) <= ventanaSensorConectadoMs);
   body += "\"pir1Conectado\":" + String(pir1Conectado ? "true" : "false") + ",";
-  body += "\"pir2Conectado\":" + String(pir2Conectado ? "true" : "false") + ",";
   body += "\"pir1Estado\":" + String(ultimoEstadoPIR1) + ",";
-  body += "\"pir2Estado\":" + String(ultimoEstadoPIR2) + ",";
   body += "\"uptimeMs\":" + String(ahora) + ",";
   body += "\"lastSeen\":{\".sv\":\"timestamp\"}";
   body += "}";
@@ -636,6 +686,41 @@ void probarHowsMySSL() {
   Serial.printf("[TLS] howsmyssl OK | tls_version=%s | rating=%s\n", tlsVersion, rating);
 }
 
+void esperarConMillis(unsigned long tiempoMs) {
+  unsigned long inicio = millis();
+  while ((millis() - inicio) < tiempoMs) {
+    // Mantiene viva la tarea de red sin bloquear con delay().
+    yield();
+  }
+}
+
+bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  for (int intento = 1; intento <= maxIntentos; intento++) {
+    IPAddress ip;
+    if (WiFi.hostByName(host, ip)) {
+      return true;
+    }
+
+    Serial.printf("[DNS] %s intento %d/%d fallido para %s\n", etiqueta, intento, maxIntentos, host);
+    if (intento < maxIntentos) {
+      WiFi.disconnect(false, false);
+      esperarConMillis(250);
+      WiFi.reconnect();
+      unsigned long inicio = millis();
+      while (WiFi.status() != WL_CONNECTED && (millis() - inicio) < 5000) {
+        yield();
+      }
+      esperarConMillis(250);
+    }
+  }
+
+  return false;
+}
+
 void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento) {
   // ".sv":"timestamp" le pide a Firebase que ponga la hora real del
   // servidor al momento de guardar, en vez de usar millis() (que solo
@@ -694,8 +779,44 @@ void procesarAlarma(int sensorId) {
       Serial.printf("[ALARM] Foto %d/%d: evento guardado sin foto\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
     } else {
       String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + "_f" + String(i + 1) + ".jpg";
-      String photoUrl = subirFotoAStorage(fb, storagePath);
-      esp_camera_fb_return(fb); // liberar memoria de la foto
+      size_t lenFoto = fb->len;
+      uint8_t* copiaFoto = (uint8_t*)malloc(lenFoto);
+      if (!copiaFoto) {
+        Serial.println("[ALARM] Sin memoria para copiar foto de movimiento.");
+        esp_camera_fb_return(fb);
+        guardarAlarmaEnDatabase(sensorId, "", storagePath, false, "movimiento");
+        Serial.printf("[ALARM] Foto %d/%d: evento guardado sin foto\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
+        continue;
+      }
+
+      memcpy(copiaFoto, fb->buf, lenFoto);
+      esp_camera_fb_return(fb);
+
+      // Igual que captura manual: liberar camara antes de TLS mejora estabilidad de upload.
+      if (camaraActiva) {
+        esp_camera_deinit();
+        camaraActiva = false;
+      }
+
+      String photoUrl = "";
+      const int maxReintentosSubida = 3;
+      for (int intentoSubida = 1; intentoSubida <= maxReintentosSubida; intentoSubida++) {
+        photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath);
+        if (photoUrl != "") {
+          break;
+        }
+        Serial.printf("[ALARM] Reintento subida %d/%d para foto %d/%d\n",
+                      intentoSubida,
+                      maxReintentosSubida,
+                      i + 1,
+                      SECUENCIA_FOTOS_POR_EVENTO);
+        if (intentoSubida < maxReintentosSubida) {
+          idToken = "";
+          asegurarAutenticacionFirebase();
+          esperarConMillis(180);
+        }
+      }
+      free(copiaFoto);
 
       if (photoUrl != "") {
         guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false, "movimiento");
@@ -708,7 +829,7 @@ void procesarAlarma(int sensorId) {
     }
 
     if (i < SECUENCIA_FOTOS_POR_EVENTO - 1) {
-      delay(INTERVALO_ENTRE_FOTOS_MS);
+      esperarConMillis(INTERVALO_ENTRE_FOTOS_MS);
     }
   }
 
@@ -721,36 +842,81 @@ void procesarAlarma(int sensorId) {
   }
 }
 
-void procesarCapturaManual() {
+bool procesarCapturaManual(String& detalleResultado) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[MANUAL] Sin WiFi, no se puede sacar foto manual.");
-    return;
+    detalleResultado = "Sin WiFi en dispositivo, reintentando";
+    return false;
   }
 
   if (!asegurarAutenticacionFirebase()) {
     Serial.println("[MANUAL] Sin token Firebase valido.");
-    return;
+    detalleResultado = "Sin autenticacion Firebase valida, reintentando";
+    return false;
   }
 
   Serial.println("[MANUAL] Captura manual solicitada desde dashboard.");
 
-  camera_fb_t* fb = tomarFoto();
-  String storagePath = "capturas/manual_" + String(millis()) + ".jpg";
+  bool fotoSubidaOk = false;
+  const int maxIntentos = 3;
 
-  if (!fb) {
-    guardarAlarmaEnDatabase(0, "", storagePath, true, "captura_manual");
-    Serial.println("[MANUAL] No se pudo capturar. Evento guardado sin foto.");
-  } else {
-    String photoUrl = subirFotoAStorage(fb, storagePath);
+  for (int intento = 1; intento <= maxIntentos && !fotoSubidaOk; intento++) {
+    Serial.printf("[MANUAL] Intento %d/%d de captura/subida manual\n", intento, maxIntentos);
+    camera_fb_t* fb = tomarFoto();
+    String storagePath = "capturas/manual_" + String(millis()) + "_i" + String(intento) + ".jpg";
+
+    if (!fb) {
+      Serial.println("[MANUAL] No se pudo capturar la foto en este intento.");
+      if (intento < maxIntentos) {
+        esperarConMillis(120);
+      }
+      continue;
+    }
+
+    size_t lenFoto = fb->len;
+    uint8_t* copiaFoto = (uint8_t*)malloc(lenFoto);
+    if (!copiaFoto) {
+      Serial.println("[MANUAL] Sin memoria para copiar la foto manual.");
+      esp_camera_fb_return(fb);
+      if (intento < maxIntentos) {
+        esperarConMillis(120);
+      }
+      continue;
+    }
+
+    memcpy(copiaFoto, fb->buf, lenFoto);
     esp_camera_fb_return(fb);
+
+    // Baja consumo/uso de memoria durante TLS para reducir cuelgues en upload manual.
+    if (camaraActiva) {
+      esp_camera_deinit();
+      camaraActiva = false;
+      Serial.println("[CAM] Camara liberada antes de subir captura manual");
+    }
+
+    String photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath);
+    free(copiaFoto);
 
     if (photoUrl != "") {
       guardarAlarmaEnDatabase(0, photoUrl, storagePath, true, "captura_manual");
       Serial.println("[MANUAL] Foto manual subida y guardada.");
+      fotoSubidaOk = true;
+      detalleResultado = "Captura manual registrada en historial";
     } else {
-      guardarAlarmaEnDatabase(0, "", storagePath, true, "captura_manual");
-      Serial.println("[MANUAL] No se pudo subir la foto manual.");
+      Serial.println("[MANUAL] No se pudo subir la foto manual en este intento.");
+      if (intento < maxIntentos) {
+        idToken = "";
+        asegurarAutenticacionFirebase();
+        esperarConMillis(180);
+      }
     }
+  }
+
+  if (!fotoSubidaOk) {
+    String fallbackPath = "capturas/manual_" + String(millis()) + "_fallback.jpg";
+    guardarAlarmaEnDatabase(0, "", fallbackPath, true, "captura_manual");
+    Serial.println("[MANUAL] Captura manual registrada sin foto tras reintentos.");
+    detalleResultado = "Captura manual registrada sin foto (reintentada)";
   }
 
   if (camaraActiva) {
@@ -758,6 +924,8 @@ void procesarCapturaManual() {
     camaraActiva = false;
     Serial.println("[CAM] Camara liberada tras captura manual");
   }
+
+  return true;
 }
 
 bool leerComandoCapturaManualPendiente() {
@@ -812,7 +980,7 @@ void actualizarEstadoComandoCaptura(const String& estado, const String& detalle)
 }
 
 void revisarComandoCapturaManual() {
-  const unsigned long intervaloMs = 1500;
+  const unsigned long intervaloMs = 300;
   unsigned long ahora = millis();
   if ((ahora - ultimoChequeoComandoManual) < intervaloMs) {
     return;
@@ -828,6 +996,11 @@ void revisarComandoCapturaManual() {
 
   Serial.println("[CMD] Comando de captura manual detectado.");
   actualizarEstadoComandoCaptura("procesando", "Capturando foto...");
-  procesarCapturaManual();
-  actualizarEstadoComandoCaptura("completado", "Captura manual registrada en historial");
+  String detalleResultado = "No se pudo completar la captura manual";
+  bool ok = procesarCapturaManual(detalleResultado);
+  if (ok) {
+    actualizarEstadoComandoCaptura("completado", detalleResultado);
+  } else {
+    actualizarEstadoComandoCaptura("pendiente", detalleResultado);
+  }
 }

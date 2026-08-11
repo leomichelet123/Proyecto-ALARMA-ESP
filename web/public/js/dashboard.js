@@ -14,6 +14,12 @@ const REFRESCO_SUAVE_MS = 5000;
 let ultimaLimpiezaRetencionMs = 0;
 let limpiezaRetencionEnCurso = false;
 let autoRefreshTimer = null;
+const WEB_COMPAT_ALARMA_ID = 'alarma001';
+let ultimoEstadoComandoManualTs = 0;
+const MAX_MS_PENDIENTE_MANUAL = 15000;
+const MAX_MS_PROCESANDO_MANUAL = 25000;
+let ultimoComandoManual = null;
+let serverTimeOffsetMs = 0;
 
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
@@ -37,6 +43,10 @@ function setManualPhotoStatus(msg, tipo = 'normal') {
   if (tipo === 'ok' || tipo === 'error') {
     manualPhotoStatus.classList.add(tipo);
   }
+}
+
+function ahoraServidorMs() {
+  return Date.now() + serverTimeOffsetMs;
 }
 
 function mostrarBanner() {
@@ -188,6 +198,7 @@ auth.onAuthStateChanged(async (user) => {
   if (!autoRefreshTimer) {
     autoRefreshTimer = setInterval(() => {
       if (document.visibilityState === 'visible') {
+        reevaluarEstadoComandoManual();
         refrescarDashboardSuave();
       }
     }, REFRESCO_SUAVE_MS);
@@ -299,7 +310,16 @@ function renderHistorialLista(data) {
   emptyState.style.display = 'none';
 
   const masReciente = alarmas[0].timestamp || 0;
-  if (ultimoTimestampVisto !== null && masReciente > ultimoTimestampVisto) {
+  const eventoMasReciente = alarmas[0] || {};
+  const esCapturaManualReciente = (eventoMasReciente.tipoEvento === 'captura_manual') || Number(eventoMasReciente.sensor) === 0;
+  const ultimoMovimiento = alarmas.find((a) => {
+    if (!a || typeof a !== 'object') return false;
+    const esCapturaManual = (a.tipoEvento === 'captura_manual') || Number(a.sensor) === 0;
+    return !esCapturaManual;
+  });
+  const masRecienteMovimiento = ultimoMovimiento ? Number(ultimoMovimiento.timestamp || 0) : 0;
+
+  if (ultimoTimestampVisto !== null && masReciente > ultimoTimestampVisto && !esCapturaManualReciente) {
     mostrarBanner();
     if (Notification.permission === 'granted') {
       new Notification('🚨 ALARMA ACTIVADA', {
@@ -311,7 +331,7 @@ function renderHistorialLista(data) {
   }
   ultimoTimestampVisto = masReciente;
 
-  actualizarEstadoSensorPIR(dotPirGeneral, statusPirGeneral, masReciente);
+  actualizarEstadoSensorPIR(dotPirGeneral, statusPirGeneral, masRecienteMovimiento || null);
 
   alarmas.forEach((alarma) => {
     const item = document.createElement('div');
@@ -509,6 +529,11 @@ db.ref('.info/connected').on('value', (snapshot) => {
   connectionStatus.textContent = conectado ? 'En linea' : 'Sin conexion';
 });
 
+db.ref('.info/serverTimeOffset').on('value', (snapshot) => {
+  const offset = Number(snapshot.val() || 0);
+  serverTimeOffsetMs = Number.isFinite(offset) ? offset : 0;
+});
+
 // ---------- Utilidades ----------
 function formatearFecha(timestampMs) {
   if (!timestampMs) return 'Sin fecha';
@@ -555,8 +580,8 @@ function actualizarEstadoDispositivoUI(estado) {
   }
 
   const lastSeen = Number(estado.lastSeen || 0);
-  const online = !!lastSeen && (Date.now() - lastSeen) < VENTANA_ONLINE_CAMARA_MS;
-  const camOk = online && estado.camaraOk === true;
+  const onlineReciente = !!lastSeen && (ahoraServidorMs() - lastSeen) < VENTANA_ONLINE_CAMARA_MS;
+  const camOk = onlineReciente;
 
   setDotEstado(dotCamera, camOk);
   statusCamera.textContent = camOk ? 'Conectada' : 'Sin conexion';
@@ -603,6 +628,109 @@ function iniciarEscuchas() {
   escucharEstadoDispositivo();
   escucharUsuarios();
   escucharHistorial();
+  escucharEstadoComandoManual();
+}
+
+function reevaluarEstadoComandoManual() {
+  if (!ultimoComandoManual) return;
+  aplicarEstadoComandoManual(ultimoComandoManual);
+}
+
+function aplicarEstadoComandoManual(cmd) {
+  if (!cmd || typeof cmd !== 'object') {
+    ultimoComandoManual = null;
+    ultimoEstadoComandoManualTs = 0;
+    if (btnPhotoNow) btnPhotoNow.disabled = false;
+    setManualPhotoStatus('Listo para enviar solicitud.', 'normal');
+    return;
+  }
+
+  ultimoComandoManual = cmd;
+
+  const ahoraMs = ahoraServidorMs();
+  const tsRaw = Number(cmd.actualizadoEn || cmd.solicitadoEn || 0);
+  // Protege contra timestamps corruptos/futuros que bloquean la UI.
+  const ts = tsRaw > (ahoraMs + 60000) ? ahoraMs : tsRaw;
+  if (ultimoEstadoComandoManualTs > (ahoraMs + 60000)) {
+    ultimoEstadoComandoManualTs = 0;
+  }
+  if (ts && ts + 2000 < ultimoEstadoComandoManualTs) return;
+  if (ts) ultimoEstadoComandoManualTs = ts;
+
+  const estado = (cmd.estado || '').toLowerCase();
+  const detalle = cmd.detalle || '';
+  const edadMs = ts ? (ahoraMs - ts) : 0;
+
+  if (estado === 'pendiente') {
+    if (edadMs > MAX_MS_PENDIENTE_MANUAL) {
+      setManualPhotoStatus('Solicitud anterior vencida. Podés intentar de nuevo.', 'error');
+      if (btnPhotoNow) btnPhotoNow.disabled = false;
+      return;
+    }
+    setManualPhotoStatus('Solicitud enviada. Esperando que el dispositivo tome la foto.', 'normal');
+    if (btnPhotoNow) btnPhotoNow.disabled = true;
+    return;
+  }
+
+  if (estado === 'procesando') {
+    if (edadMs > MAX_MS_PROCESANDO_MANUAL) {
+      const autoReintentado = !!cmd.autoReintentado;
+      if (!autoReintentado && alarmaId) {
+        const reintento = {
+          tipo: 'captura_manual',
+          solicitadoPor: miUid || (cmd.solicitadoPor || ''),
+          solicitadoEn: firebase.database.ServerValue.TIMESTAMP,
+          estado: 'pendiente',
+          autoReintentado: true,
+          detalle: 'Reintento automatico por timeout de procesamiento'
+        };
+        const updates = {};
+        updates['alarmas/' + alarmaId + '/comandos/capturaManual'] = reintento;
+        if (WEB_COMPAT_ALARMA_ID && WEB_COMPAT_ALARMA_ID !== alarmaId) {
+          updates['alarmas/' + WEB_COMPAT_ALARMA_ID + '/comandos/capturaManual'] = reintento;
+        }
+        db.ref().update(updates).catch(() => {});
+        setManualPhotoStatus('Reintentando captura automaticamente...', 'normal');
+        if (btnPhotoNow) btnPhotoNow.disabled = true;
+        return;
+      }
+
+      setManualPhotoStatus('La captura tardó demasiado. Podés reintentar.', 'error');
+      if (btnPhotoNow) btnPhotoNow.disabled = false;
+      return;
+    }
+    setManualPhotoStatus(detalle || 'Procesando captura manual...', 'normal');
+    if (btnPhotoNow) btnPhotoNow.disabled = true;
+    return;
+  }
+
+  if (estado === 'completado') {
+    setManualPhotoStatus(detalle || 'Captura manual completada.', 'ok');
+    if (btnPhotoNow) btnPhotoNow.disabled = false;
+    return;
+  }
+
+  if (estado === 'error') {
+    setManualPhotoStatus(detalle || 'Error en captura manual.', 'error');
+    if (btnPhotoNow) btnPhotoNow.disabled = false;
+  }
+}
+
+function escucharEstadoComandoManual() {
+  if (!alarmaId) return;
+
+  const rutaSesion = 'alarmas/' + alarmaId + '/comandos/capturaManual';
+  const rutaCompat = WEB_COMPAT_ALARMA_ID ? ('alarmas/' + WEB_COMPAT_ALARMA_ID + '/comandos/capturaManual') : rutaSesion;
+
+  db.ref(rutaSesion).on('value', (snapshot) => {
+    aplicarEstadoComandoManual(snapshot.val());
+  });
+
+  if (rutaCompat !== rutaSesion) {
+    db.ref(rutaCompat).on('value', (snapshot) => {
+      aplicarEstadoComandoManual(snapshot.val());
+    });
+  }
 }
 
 async function solicitarFotoManual() {
@@ -615,12 +743,23 @@ async function solicitarFotoManual() {
   setManualPhotoStatus('Enviando solicitud de foto...', 'normal');
 
   try {
-    await db.ref('alarmas/' + alarmaId + '/comandos/capturaManual').set({
+    const comando = {
       tipo: 'captura_manual',
       solicitadoPor: miUid,
       solicitadoEn: firebase.database.ServerValue.TIMESTAMP,
       estado: 'pendiente'
-    });
+    };
+
+    const updates = {};
+    updates['alarmas/' + alarmaId + '/comandos/capturaManual'] = comando;
+
+    // Compatibilidad con firmware: refleja el comando en el canal fijo
+    // cuando el ID de sesión no coincide con el canal del dispositivo.
+    if (WEB_COMPAT_ALARMA_ID && WEB_COMPAT_ALARMA_ID !== alarmaId) {
+      updates['alarmas/' + WEB_COMPAT_ALARMA_ID + '/comandos/capturaManual'] = comando;
+    }
+
+    await db.ref().update(updates);
 
     setManualPhotoStatus('Solicitud enviada. Esperando que el dispositivo tome la foto.', 'ok');
   } catch (e) {

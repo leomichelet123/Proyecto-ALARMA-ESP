@@ -36,8 +36,8 @@
           ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid)"
         },
         "comandos": {
-          ".read": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists())",
-          ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists())",
+          ".read": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid || root.child('alarmas').child($alarmaId).child('dispositivoUID').val() === auth.uid)",
+          ".write": "auth != null && (root.child('userAlarma').child(auth.uid).val() === $alarmaId || root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid || root.child('alarmas').child($alarmaId).child('dispositivoUID').val() === auth.uid)",
           "capturaManual": {
             ".validate": "newData.hasChildren(['estado'])"
           }

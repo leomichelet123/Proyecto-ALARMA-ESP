@@ -28,6 +28,13 @@
             ".write": "!data.exists()",
             ".validate": "newData.hasChildren(['sensor','timestamp','photoUrl'])"
           }
+        },
+        "comandos": {
+          ".read": "auth != null && (root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid || root.child('alarmas').child($alarmaId).child('dispositivoUID').val() === auth.uid)",
+          ".write": "auth != null && (root.child('alarmas').child($alarmaId).child('usuarios').child(auth.uid).exists() || root.child('alarmas').child($alarmaId).child('dispositivoUid').val() === auth.uid || root.child('alarmas').child($alarmaId).child('dispositivoUID').val() === auth.uid)",
+          "capturaManual": {
+            ".validate": "newData.hasChildren(['estado'])"
+          }
         }
       }
     }
