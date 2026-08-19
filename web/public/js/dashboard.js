@@ -10,16 +10,27 @@ const RETENCION_DIAS_HISTORIAL = 7;
 const RETENCION_MS_HISTORIAL = RETENCION_DIAS_HISTORIAL * 24 * 60 * 60 * 1000;
 const LIMPIEZA_RETENCION_INTERVALO_MS = 15 * 60 * 1000;
 const VENTANA_ONLINE_CAMARA_MS = 60000;
-const REFRESCO_SUAVE_MS = 5000;
+const REFRESCO_SUAVE_MS = 3000;
 let ultimaLimpiezaRetencionMs = 0;
 let limpiezaRetencionEnCurso = false;
 let autoRefreshTimer = null;
+let ultimoEstadoDispositivoCache = null;
 const WEB_COMPAT_ALARMA_ID = 'alarma001';
 let ultimoEstadoComandoManualTs = 0;
 const MAX_MS_PENDIENTE_MANUAL = 15000;
 const MAX_MS_PROCESANDO_MANUAL = 25000;
 let ultimoComandoManual = null;
 let serverTimeOffsetMs = 0;
+
+function elegirEstadoMasReciente(a, b) {
+  const aTs = Number((a && a.lastSeen) || 0);
+  const bTs = Number((b && b.lastSeen) || 0);
+  return bTs > aTs ? (b || null) : (a || null);
+}
+
+function mergeHistorial(a, b) {
+  return Object.assign({}, a || {}, b || {});
+}
 
 const connectionStatus = document.getElementById('connection-status');
 const syncAlert = document.getElementById('sync-alert');
@@ -198,6 +209,7 @@ auth.onAuthStateChanged(async (user) => {
   if (!autoRefreshTimer) {
     autoRefreshTimer = setInterval(() => {
       if (document.visibilityState === 'visible') {
+        actualizarEstadoDispositivoUI(ultimoEstadoDispositivoCache);
         reevaluarEstadoComandoManual();
         refrescarDashboardSuave();
       }
@@ -375,9 +387,22 @@ async function refrescarDashboardSuave() {
       db.ref('alarmas/' + alarmaId + '/historial').once('value')
     ]);
 
-    actualizarEstadoDispositivoUI(estadoSnap.val());
+    let estadoFinal = estadoSnap.val() || null;
+    let historialFinal = historialSnap.val() || {};
+
+    if (WEB_COMPAT_ALARMA_ID && WEB_COMPAT_ALARMA_ID !== alarmaId) {
+      const [estadoCompatSnap, historialCompatSnap] = await Promise.all([
+        db.ref('alarmas/' + WEB_COMPAT_ALARMA_ID + '/estadoDispositivo').once('value'),
+        db.ref('alarmas/' + WEB_COMPAT_ALARMA_ID + '/historial').once('value')
+      ]);
+      estadoFinal = elegirEstadoMasReciente(estadoFinal, estadoCompatSnap.val() || null);
+      historialFinal = mergeHistorial(historialFinal, historialCompatSnap.val() || {});
+    }
+
+    ultimoEstadoDispositivoCache = estadoFinal;
+    actualizarEstadoDispositivoUI(ultimoEstadoDispositivoCache);
     renderUsuariosLista(usuariosSnap.val() || {});
-    renderHistorialLista(historialSnap.val() || {});
+    renderHistorialLista(historialFinal);
   } catch (e) {
     console.warn('No se pudo hacer refresco suave del dashboard:', e.message || e);
   }
@@ -768,10 +793,20 @@ if (btnPhotoNow) {
 
 function escucharEstadoDispositivo() {
   db.ref('alarmas/' + alarmaId + '/estadoDispositivo').on('value', (snapshot) => {
-    actualizarEstadoDispositivoUI(snapshot.val());
+    ultimoEstadoDispositivoCache = elegirEstadoMasReciente(ultimoEstadoDispositivoCache, snapshot.val() || null);
+    actualizarEstadoDispositivoUI(ultimoEstadoDispositivoCache);
   }, () => {
-    actualizarEstadoDispositivoUI(null);
+    actualizarEstadoDispositivoUI(ultimoEstadoDispositivoCache);
   });
+
+  if (WEB_COMPAT_ALARMA_ID && WEB_COMPAT_ALARMA_ID !== alarmaId) {
+    db.ref('alarmas/' + WEB_COMPAT_ALARMA_ID + '/estadoDispositivo').on('value', (snapshot) => {
+      ultimoEstadoDispositivoCache = elegirEstadoMasReciente(ultimoEstadoDispositivoCache, snapshot.val() || null);
+      actualizarEstadoDispositivoUI(ultimoEstadoDispositivoCache);
+    }, () => {
+      actualizarEstadoDispositivoUI(ultimoEstadoDispositivoCache);
+    });
+  }
 }
 
 function escucharUsuarios() {
@@ -852,4 +887,25 @@ function escucharHistorial() {
     tieneErrorHistorial = true;
     actualizarSyncAlert();
   });
+
+  if (WEB_COMPAT_ALARMA_ID && WEB_COMPAT_ALARMA_ID !== alarmaId) {
+    const alarmasCompatRef = db.ref('alarmas/' + WEB_COMPAT_ALARMA_ID + '/historial')
+      .orderByChild('timestamp')
+      .limitToLast(100);
+
+    alarmasCompatRef.on('value', async (snapshot) => {
+      tieneErrorHistorial = false;
+      actualizarSyncAlert();
+      try {
+        const principalSnap = await db.ref('alarmas/' + alarmaId + '/historial').once('value');
+        const merged = mergeHistorial(principalSnap.val() || {}, snapshot.val() || {});
+        renderHistorialLista(merged);
+      } catch (e) {
+        renderHistorialLista(snapshot.val() || {});
+      }
+    }, () => {
+      // Si falla el canal compat, mantenemos el canal principal.
+      actualizarSyncAlert();
+    });
+  }
 }

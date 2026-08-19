@@ -32,10 +32,18 @@ unsigned long inicioLowPIR1 = 0;
 unsigned long inicioHighPIR1 = 0;
 bool sensorPIR1Armado = true;
 unsigned long ultimoChequeoSincronizacionOffline = 0;
+bool modoOfflineActivo = false;
+bool wifiDisponible = false;
+bool wifiConectadoPrevio = false;
+unsigned long ultimoIntentoReconexionWiFi = 0;
+unsigned long ultimoIntentoAuthFirebase = 0;
+
+const unsigned long INTERVALO_RECONEXION_WIFI_MS = 5000;
+const unsigned long INTERVALO_REINTENTO_AUTH_MS = 4000;
 
 const char* OFFLINE_QUEUE_FILE = "/offline_queue.txt";
 const int MAX_ALARMAS_OFFLINE = 2;
-const int MAX_FOTOS_POR_ALARMA_OFFLINE = 3;
+const int MAX_FOTOS_POR_ALARMA_OFFLINE = 1;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
@@ -46,7 +54,7 @@ camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& storagePath);
 String subirBytesAStorage(const uint8_t* data, size_t len, const String& storagePath);
 void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento = "movimiento");
-void procesarAlarma(int sensorId);
+void procesarAlarma(int sensorId, bool disparoPorSensor3v = false);
 bool procesarCapturaManual(String& detalleResultado);
 void revisarComandoCapturaManual();
 bool leerComandoCapturaManualPendiente();
@@ -74,16 +82,19 @@ bool guardarMetaEventoOffline(const String& eventId, int sensorId, bool importan
 bool agregarEventoAColaOffline(const String& eventId);
 bool obtenerPrimerEventoColaOffline(String& eventId);
 bool eliminarPrimerEventoColaOffline();
-bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento);
+bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento, bool usarFlash);
 bool sincronizarColaOffline();
 bool sincronizarEventoOffline(const String& eventId);
 bool leerMetaEventoOffline(const String& eventId, DynamicJsonDocument& meta);
 String rutaMetaOffline(const String& eventId);
 String rutaFotoOffline(const String& eventId, int indiceFoto);
+void registrarEntradaModoOffline(const char* motivo);
+void registrarSalidaModoOffline();
+void reintentarWiFiEnSegundoPlano();
+void manejarEventoWiFi(WiFiEvent_t event, WiFiEventInfo_t info);
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
   Serial.println("\n=== Iniciando sistema de alarma ===");
   Serial.println("[BOOT] setup() iniciado");
 
@@ -105,16 +116,20 @@ void setup() {
     Serial.println("[BOOT] No se pudo iniciar SPIFFS. El modo offline quedara deshabilitado.");
   }
 
+  WiFi.onEvent(manejarEventoWiFi);
+
   Serial.println("[BOOT] Iniciando WiFi");
   conectarWiFi();
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifiDisponible || WiFi.status() == WL_CONNECTED) {
     Serial.println("[BOOT] Autenticando dispositivo en Firebase");
     if (!asegurarAutenticacionFirebase()) {
       Serial.println("[BOOT] No se pudo autenticar en Firebase. El sistema seguira activo, pero no podra subir eventos hasta recuperar autenticacion.");
     }
     diagnosticarEndpointDatabase();
     probarHowsMySSL();
+  } else {
+    registrarEntradaModoOffline("sin wifi en arranque");
   }
 
   Serial.println("[BOOT] Iniciando camara");
@@ -143,7 +158,7 @@ void loop() {
     ultimoHeartbeat = ahora;
     Serial.printf("[DIAG] serie ok | uptime=%lu ms\n", ahora);
   }
-  delay(10);
+  yield();
   return;
 #endif
 
@@ -156,18 +171,57 @@ void loop() {
   if ((ahora - ultimaAlarmaTest) > INTERVALO_TEST_FOTO_MS) {
     ultimaAlarmaTest = ahora;
     Serial.println("[TEST] Disparo automatico de foto");
-    procesarAlarma(99);
+    procesarAlarma(99, true);
   }
 #endif
 
-  // Reconectar WiFi si se cae
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi desconectado, reconectando...");
-    conectarWiFi();
+  bool enlaceCaido = (!wifiDisponible && WiFi.status() != WL_CONNECTED);
+  bool conectadoAhora = !enlaceCaido;
+
+  if (conectadoAhora != wifiConectadoPrevio) {
+    wifiConectadoPrevio = conectadoAhora;
+    if (conectadoAhora) {
+      Serial.println("[WIFI] Enlace recuperado");
+      // Fuerza publish y primer sync apenas vuelve la red.
+      ultimoEstadoDispositivo = 0;
+      ultimoChequeoSincronizacionOffline = 0;
+    } else {
+      Serial.println("[WIFI] Enlace perdido");
+      idToken = "";
+    }
+  }
+
+  if (enlaceCaido) {
+    registrarEntradaModoOffline("sin wifi");
+    reintentarWiFiEnSegundoPlano();
+  } else {
+    registrarSalidaModoOffline();
   }
 
   int estadoPIR1 = PIR1_HABILITADO ? digitalRead(PIR1_PIN) : LOW;
   unsigned long ahoraPulso = millis();
+
+  if (estadoPIR1 != estadoAnteriorPIR1) {
+    Serial.printf("[PIR1] Cambio de estado -> %d | armado=%d | wifi=%d\n",
+                  estadoPIR1,
+                  sensorPIR1Armado ? 1 : 0,
+                  WiFi.status());
+  }
+
+  bool disparoOfflinePorFlanco = enlaceCaido &&
+                                 sensorPIR1Armado &&
+                                 estadoAnteriorPIR1 == LOW &&
+                                 estadoPIR1 == HIGH &&
+                                 (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS;
+
+  if (disparoOfflinePorFlanco) {
+    ultimaAlarmaPIR1 = ahora;
+    sensorPIR1Armado = false;
+    inicioHighPIR1 = 0;
+    ultimoPulsoPIR1 = ahoraPulso;
+    Serial.println(">>> Movimiento detectado offline: Sensor 1");
+    procesarAlarma(1, true);
+  }
 
   // Armado inicial y rearmado: requiere LOW estable para evitar disparos espurios.
   if (!sensorPIR1Armado && estadoPIR1 == LOW) {
@@ -195,6 +249,21 @@ void loop() {
     }
   }
 
+  bool highConfirmado = (estadoPIR1 == HIGH) && (inicioHighPIR1 > 0) &&
+                        ((ahoraPulso - inicioHighPIR1) >= TIEMPO_CONFIRMACION_HIGH_MS);
+
+  if (sensorPIR1Armado && highConfirmado && estadoAnteriorPIR1 != HIGH) {
+    Serial.printf("[PIR1] HIGH confirmado durante %lu ms\n", ahoraPulso - inicioHighPIR1);
+  }
+
+  if (!enlaceCaido && sensorPIR1Armado && highConfirmado && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
+    ultimaAlarmaPIR1 = ahora;
+    sensorPIR1Armado = false;
+    inicioHighPIR1 = 0;
+    Serial.println(">>> Movimiento detectado: Sensor 1");
+    procesarAlarma(1, true);
+  }
+
   revisarComandoCapturaManual();
   if (WiFi.status() == WL_CONNECTED && (ahora - ultimoChequeoSincronizacionOffline) >= 10000) {
     ultimoChequeoSincronizacionOffline = ahora;
@@ -202,20 +271,9 @@ void loop() {
   }
   publicarEstadoDispositivo(false);
 
-  bool highConfirmado = (estadoPIR1 == HIGH) && (inicioHighPIR1 > 0) &&
-                        ((ahoraPulso - inicioHighPIR1) >= TIEMPO_CONFIRMACION_HIGH_MS);
-
-  if (sensorPIR1Armado && highConfirmado && (ahora - ultimaAlarmaPIR1) > TIEMPO_ENTRE_ALARMAS_MS) {
-    ultimaAlarmaPIR1 = ahora;
-    sensorPIR1Armado = false;
-    inicioHighPIR1 = 0;
-    Serial.println(">>> Movimiento detectado: Sensor 1");
-    procesarAlarma(1);
-  }
-
   estadoAnteriorPIR1 = estadoPIR1;
 
-  delay(20);
+  yield();
 }
 
 // ==================== WiFi ====================
@@ -224,55 +282,39 @@ void conectarWiFi() {
   WiFi.setSleep(false);
   WiFi.persistent(false);
   WiFi.disconnect(true, true);
-  delay(200);
 
   Serial.printf("[WIFI] SSID objetivo: %s\n", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("[WIFI] Conexion iniciada en segundo plano");
+}
 
-  int canalObjetivo = 0;
-  int redes = WiFi.scanNetworks(false, true);
-  if (redes <= 0) {
-    Serial.println("[WIFI] No se detectaron redes en el escaneo inicial.");
-  } else {
-    bool encontrada = false;
-    for (int i = 0; i < redes; i++) {
-      String ssid = WiFi.SSID(i);
-      if (ssid == String(WIFI_SSID)) {
-        encontrada = true;
-        canalObjetivo = WiFi.channel(i);
-        Serial.printf("[WIFI] Red encontrada | canal=%d | RSSI=%d dBm | encript=%d\n",
-                      canalObjetivo,
-                      WiFi.RSSI(i),
-                      (int)WiFi.encryptionType(i));
-        break;
-      }
-    }
-
-    if (!encontrada) {
-      Serial.println("[WIFI] El SSID configurado no aparece en el escaneo.");
-    }
+void reintentarWiFiEnSegundoPlano() {
+  unsigned long ahora = millis();
+  if ((ahora - ultimoIntentoReconexionWiFi) < INTERVALO_RECONEXION_WIFI_MS) {
+    return;
   }
 
-  if (canalObjetivo > 0) {
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD, canalObjetivo);
-  } else {
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  }
+  ultimoIntentoReconexionWiFi = ahora;
+  Serial.println("[WIFI] Reintento de conexion en segundo plano...");
+  WiFi.disconnect(false, false);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
 
-  Serial.print("Conectando a WiFi");
-  int intentos = 0;
-  while (WiFi.status() != WL_CONNECTED && intentos < 40) {
-    delay(500);
-    Serial.print(".");
-    intentos++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi conectado. IP: " + WiFi.localIP().toString());
-  } else {
-    Serial.println("\nNo se pudo conectar al WiFi.");
-    Serial.printf("[WIFI] Estado final=%d\n", WiFi.status());
-    Serial.println("[WIFI] Si aparece 4WAY_HANDSHAKE_TIMEOUT, revisar clave y seguridad WPA2/WPA3 del router/hotspot.");
-    Serial.println("[BOOT] Continuando sin WiFi; las subidas a Firebase van a fallar");
+void manejarEventoWiFi(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      wifiDisponible = true;
+      Serial.println("[WIFI] Evento: conectado con IP");
+      registrarSalidaModoOffline();
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      wifiDisponible = false;
+      idToken = "";
+      Serial.println("[WIFI] Evento: desconectado");
+      registrarEntradaModoOffline("evento desconexion wifi");
+      break;
+    default:
+      break;
   }
 }
 
@@ -290,50 +332,44 @@ bool autenticarDispositivo() {
                 "\",\"password\":\"" + String(FIREBASE_DEVICE_PASSWORD) +
                 "\",\"returnSecureToken\":true}";
 
-  for (int intento = 1; intento <= 3; intento++) {
-    WiFiClientSecure client;
-    configurarClienteSeguro(client);
+  WiFiClientSecure client;
+  configurarClienteSeguro(client);
 
-    HTTPClient http;
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
+  HTTPClient http;
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
 
-    int httpCode = http.POST(body);
-
-    if (httpCode == 200) {
-      String respuesta = http.getString();
-      http.end();
-
-      DynamicJsonDocument doc(4096);
-      DeserializationError error = deserializeJson(doc, respuesta);
-
-      if (!error && doc.containsKey("idToken")) {
-        idToken = doc["idToken"].as<String>();
-        Serial.println("Autenticado como dispositivo correctamente.");
-        return true;
-      } else {
-        Serial.println("No se pudo leer el token de la respuesta.");
-        return false;
-      }
-    }
-
-    Serial.printf("Intento %d/3 fallido al autenticar. Código HTTP: %d\n", intento, httpCode);
-    if (httpCode > 0) {
-      Serial.println(http.getString());
-    }
+  int httpCode = http.POST(body);
+  if (httpCode == 200) {
+    String respuesta = http.getString();
     http.end();
-    client.stop();
 
-    if (intento < 3) {
-      delay(4000);
+    DynamicJsonDocument doc(4096);
+    DeserializationError error = deserializeJson(doc, respuesta);
+
+    if (!error && doc.containsKey("idToken")) {
+      idToken = doc["idToken"].as<String>();
+      Serial.println("Autenticado como dispositivo correctamente.");
+      return true;
     }
+
+    Serial.println("No se pudo leer el token de la respuesta.");
+    return false;
   }
+
+  Serial.printf("Intento de autenticacion fallido. Código HTTP: %d\n", httpCode);
+  if (httpCode > 0) {
+    Serial.println(http.getString());
+  }
+  http.end();
+  client.stop();
 
   return false;
 }
 
 bool asegurarAutenticacionFirebase() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!wifiDisponible && WiFi.status() != WL_CONNECTED) {
+    registrarEntradaModoOffline("sin wifi");
     Serial.println("[AUTH] Sin WiFi, no se puede autenticar.");
     return false;
   }
@@ -342,9 +378,17 @@ bool asegurarAutenticacionFirebase() {
     return true;
   }
 
+  unsigned long ahora = millis();
+  if ((ahora - ultimoIntentoAuthFirebase) < INTERVALO_REINTENTO_AUTH_MS) {
+    return false;
+  }
+
+  ultimoIntentoAuthFirebase = ahora;
+
   Serial.println("[AUTH] Solicitando token Firebase...");
   bool ok = autenticarDispositivo();
   if (!ok) {
+    registrarEntradaModoOffline("sin autenticacion/firebase");
     Serial.println("[AUTH] Fallo autenticacion Firebase.");
   }
   return ok;
@@ -507,6 +551,7 @@ String subirFotoAStorage(camera_fb_t* fb, const String& nombreArchivo) {
 // ==================== Firebase Realtime Database ====================
 bool postJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
   if (!asegurarDnsHost(FIREBASE_DATABASE_URL, "RTDB")) {
+    registrarEntradaModoOffline("sin dns/internet");
     Serial.println(etiqueta + " ERROR");
     Serial.println("Error HTTP: -1");
     return false;
@@ -538,6 +583,7 @@ bool postJsonEnDatabase(const String& url, const String& body, const String& eti
 
 bool putJsonEnDatabase(const String& url, const String& body, const String& etiqueta) {
   if (!asegurarDnsHost(FIREBASE_DATABASE_URL, "RTDB")) {
+    registrarEntradaModoOffline("sin dns/internet");
     Serial.println(etiqueta + " ERROR");
     Serial.println("Error HTTP: -1");
     return false;
@@ -568,7 +614,7 @@ bool putJsonEnDatabase(const String& url, const String& body, const String& etiq
 }
 
 void publicarEstadoDispositivo(bool forzar) {
-  const unsigned long intervaloMs = 15000;
+  const unsigned long intervaloMs = 5000;
   const unsigned long ventanaSensorConectadoMs = 45000;
   unsigned long ahora = millis();
 
@@ -610,13 +656,6 @@ void publicarEstadoDispositivo(bool forzar) {
 }
 
 bool publicarEstadoDispositivoConReintento(const String& url, const String& body) {
-  if (putJsonEnDatabase(url, body, "[DB] estado dispositivo")) {
-    return true;
-  }
-
-  // Reintento simple: evita sobrecargar TLS con reauth agresivo.
-  delay(400);
-  Serial.println("[DB] estado dispositivo reintento...");
   if (putJsonEnDatabase(url, body, "[DB] estado dispositivo")) {
     return true;
   }
@@ -744,7 +783,7 @@ void apagarFlashManual() {
 }
 
 bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos) {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!wifiDisponible && WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
@@ -755,16 +794,6 @@ bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos) {
     }
 
     Serial.printf("[DNS] %s intento %d/%d fallido para %s\n", etiqueta, intento, maxIntentos, host);
-    if (intento < maxIntentos) {
-      WiFi.disconnect(false, false);
-      esperarConMillis(250);
-      WiFi.reconnect();
-      unsigned long inicio = millis();
-      while (WiFi.status() != WL_CONNECTED && (millis() - inicio) < 5000) {
-        yield();
-      }
-      esperarConMillis(250);
-    }
   }
 
   return false;
@@ -921,7 +950,7 @@ bool eliminarPrimerEventoColaOffline() {
   return true;
 }
 
-bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento) {
+bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento, bool usarFlash) {
   if (contarAlarmasOfflinePendientes() >= MAX_ALARMAS_OFFLINE) {
     Serial.println("[OFFLINE] Cola llena, no se puede guardar otra alarma sin internet.");
     return false;
@@ -935,9 +964,13 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
 
   for (int i = 1; i <= MAX_FOTOS_POR_ALARMA_OFFLINE; i++) {
     Serial.printf("[OFFLINE] Capturando foto %d/%d para evento local\n", i, MAX_FOTOS_POR_ALARMA_OFFLINE);
-    encenderFlashManual();
+    if (usarFlash) {
+      encenderFlashManual();
+    }
     camera_fb_t* fb = tomarFoto();
-    apagarFlashManual();
+    if (usarFlash) {
+      apagarFlashManual();
+    }
     if (!fb) {
       Serial.println("[OFFLINE] No se pudo capturar foto para guardar localmente.");
       return false;
@@ -952,7 +985,9 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
     }
   }
 
-  apagarFlashManual();
+  if (usarFlash) {
+    apagarFlashManual();
+  }
 
   if (!agregarEventoAColaOffline(eventId)) {
     Serial.println("[OFFLINE] No se pudo agregar el evento a la cola.");
@@ -985,8 +1020,12 @@ bool sincronizarEventoOffline(const String& eventId) {
   int sensorId = meta["sensorId"] | 1;
   bool importante = meta["importante"] | false;
   String tipoEvento = meta["tipoEvento"] | "movimiento";
+  int fotosEvento = meta["fotos"] | MAX_FOTOS_POR_ALARMA_OFFLINE;
+  if (fotosEvento < 1) {
+    fotosEvento = 1;
+  }
 
-  for (int i = 1; i <= MAX_FOTOS_POR_ALARMA_OFFLINE; i++) {
+  for (int i = 1; i <= fotosEvento; i++) {
     String rutaFoto = rutaFotoOffline(eventId, i);
     File foto = SPIFFS.open(rutaFoto, FILE_READ);
     if (!foto) {
@@ -1021,15 +1060,29 @@ bool sincronizarEventoOffline(const String& eventId) {
   }
 
   SPIFFS.remove(rutaMetaOffline(eventId));
-  for (int i = 1; i <= MAX_FOTOS_POR_ALARMA_OFFLINE; i++) {
+  for (int i = 1; i <= fotosEvento; i++) {
     SPIFFS.remove(rutaFotoOffline(eventId, i));
   }
   Serial.printf("[OFFLINE] Evento sincronizado: %s\n", eventId.c_str());
   return true;
 }
 
+void registrarEntradaModoOffline(const char* motivo) {
+  if (!modoOfflineActivo) {
+    modoOfflineActivo = true;
+    Serial.printf("[OFFLINE] ENTRE MODO OFFLINE (%s)\n", motivo);
+  }
+}
+
+void registrarSalidaModoOffline() {
+  if (modoOfflineActivo) {
+    modoOfflineActivo = false;
+    Serial.println("[OFFLINE] Sali de modo offline");
+  }
+}
+
 bool sincronizarColaOffline() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!wifiDisponible && WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
@@ -1038,14 +1091,16 @@ bool sincronizarColaOffline() {
   }
 
   String eventId;
-  while (obtenerPrimerEventoColaOffline(eventId)) {
-    if (!sincronizarEventoOffline(eventId)) {
-      Serial.printf("[OFFLINE] Se detuvo la sincronizacion en %s\n", eventId.c_str());
-      return false;
-    }
-
-    eliminarPrimerEventoColaOffline();
+  if (!obtenerPrimerEventoColaOffline(eventId)) {
+    return true;
   }
+
+  if (!sincronizarEventoOffline(eventId)) {
+    Serial.printf("[OFFLINE] Se detuvo la sincronizacion en %s\n", eventId.c_str());
+    return false;
+  }
+
+  eliminarPrimerEventoColaOffline();
 
   return true;
 }
@@ -1086,16 +1141,19 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String&
 }
 
 // ==================== Lógica principal de alarma ====================
-void procesarAlarma(int sensorId) {
-  if (WiFi.status() != WL_CONNECTED) {
+void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
+  bool usarFlash = disparoPorSensor3v;
+  if (!wifiDisponible && WiFi.status() != WL_CONNECTED) {
+    registrarEntradaModoOffline("sin wifi");
     Serial.println("[ALARM] Sin WiFi. Guardando alarma localmente para sincronizar luego.");
-    guardarAlarmaOffline(sensorId, false, "movimiento");
+    guardarAlarmaOffline(sensorId, false, "movimiento", usarFlash);
     return;
   }
 
   if (!asegurarAutenticacionFirebase()) {
+    registrarEntradaModoOffline("sin token firebase");
     Serial.println("[ALARM] Sin token Firebase valido. Guardando alarma localmente para sincronizar luego.");
-    guardarAlarmaOffline(sensorId, false, "movimiento");
+    guardarAlarmaOffline(sensorId, false, "movimiento", usarFlash);
     return;
   }
 
@@ -1104,15 +1162,24 @@ void procesarAlarma(int sensorId) {
   bool dnsRtdbOk = asegurarDnsHost(FIREBASE_DATABASE_URL, "RTDB", 1);
   bool dnsStorageOk = asegurarDnsHost("firebasestorage.googleapis.com", "STORAGE", 1);
   if (!dnsRtdbOk || !dnsStorageOk) {
+    registrarEntradaModoOffline("sin dns/internet");
     Serial.println("[ALARM] Sin salida a internet (DNS), guardando alarma localmente.");
-    guardarAlarmaOffline(sensorId, false, "movimiento");
+    guardarAlarmaOffline(sensorId, false, "movimiento", usarFlash);
     return;
   }
+
+  registrarSalidaModoOffline();
 
   Serial.printf("[ALARM] Secuencia iniciada | sensor=%d | fotos=%d\n", sensorId, SECUENCIA_FOTOS_POR_EVENTO);
 
   for (int i = 0; i < SECUENCIA_FOTOS_POR_EVENTO; i++) {
+    if (usarFlash) {
+      encenderFlashManual();
+    }
     camera_fb_t* fb = tomarFoto();
+    if (usarFlash) {
+      apagarFlashManual();
+    }
     if (!fb) {
       Serial.printf("[ALARM] Foto %d/%d fallida al capturar\n", i + 1, SECUENCIA_FOTOS_POR_EVENTO);
       String storagePath = "alarmas/sensor" + String(sensorId) + "_" + String(millis()) + "_f" + String(i + 1) + ".jpg";
