@@ -25,6 +25,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_camera.h"
 #include "camera_pins.h"
 #include "config.h"
@@ -71,6 +72,7 @@ struct EventoSensor {
 QueueHandle_t colaEventosSensor = nullptr;
 TaskHandle_t tareaRedHandle = nullptr;
 TaskHandle_t tareaCapturaHandle = nullptr;
+SemaphoreHandle_t mutexCamara = nullptr;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
@@ -164,6 +166,11 @@ void setup() {
   colaEventosSensor = xQueueCreate(TAM_COLA_EVENTOS_SENSOR, sizeof(EventoSensor));
   if (!colaEventosSensor) {
     Serial.println("[BOOT] ERROR: no se pudo crear cola de eventos del sensor");
+  }
+
+  mutexCamara = xSemaphoreCreateMutex();
+  if (!mutexCamara) {
+    Serial.println("[BOOT] ERROR: no se pudo crear mutex de camara");
   }
 
   xTaskCreatePinnedToCore(
@@ -911,9 +918,15 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
     return false;
   }
 
+  if (!mutexCamara || xSemaphoreTake(mutexCamara, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    Serial.println("[OFFLINE] Camara ocupada, no se pudo guardar la alarma.");
+    return false;
+  }
+
   String eventId = generarIdEventoOffline(sensorId, tipoEvento);
 
   if (!guardarMetaEventoOffline(eventId, sensorId, importante, tipoEvento)) {
+    xSemaphoreGive(mutexCamara);
     return false;
   }
 
@@ -928,6 +941,7 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
     }
     if (!fb) {
       Serial.println("[OFFLINE] No se pudo capturar foto para guardar localmente.");
+      xSemaphoreGive(mutexCamara);
       return false;
     }
 
@@ -936,6 +950,7 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
     esp_camera_fb_return(fb);
     if (!ok) {
       Serial.println("[OFFLINE] No se pudo escribir la foto en SPIFFS.");
+      xSemaphoreGive(mutexCamara);
       return false;
     }
   }
@@ -946,9 +961,11 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
 
   if (!agregarEventoAColaOffline(eventId)) {
     Serial.println("[OFFLINE] No se pudo agregar el evento a la cola.");
+    xSemaphoreGive(mutexCamara);
     return false;
   }
 
+  xSemaphoreGive(mutexCamara);
   Serial.printf("[OFFLINE] Evento guardado localmente: %s\n", eventId.c_str());
   return true;
 }
@@ -1128,6 +1145,11 @@ void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
     return;
   }
 
+  if (!mutexCamara || xSemaphoreTake(mutexCamara, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    Serial.println("[ALARM] Camara ocupada, se conserva el evento offline.");
+    return;
+  }
+
   Serial.printf("[ALARM] Secuencia online | sensor=%d | fotos=%d\n",
                 sensorId,
                 SECUENCIA_FOTOS_POR_EVENTO);
@@ -1198,6 +1220,7 @@ void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
           camaraActiva = false;
         }
         Serial.println("[ALARM] Red no disponible: evento conservado offline.");
+        xSemaphoreGive(mutexCamara);
         return;
       }
       free(copiaFoto);
@@ -1215,6 +1238,8 @@ void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
     camaraActiva = false;
     Serial.println("[CAM] Camara liberada tras secuencia");
   }
+
+  xSemaphoreGive(mutexCamara);
 }
 
 bool procesarCapturaManual(String& detalleResultado) {
@@ -1227,6 +1252,12 @@ bool procesarCapturaManual(String& detalleResultado) {
   if (!asegurarAutenticacionFirebase()) {
     Serial.println("[MANUAL] Sin token Firebase valido.");
     detalleResultado = "Sin autenticacion Firebase valida, reintentando";
+    return false;
+  }
+
+  if (!mutexCamara || xSemaphoreTake(mutexCamara, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    Serial.println("[MANUAL] Camara ocupada, se reintentara la captura.");
+    detalleResultado = "Camara ocupada, reintentando";
     return false;
   }
 
@@ -1295,6 +1326,7 @@ bool procesarCapturaManual(String& detalleResultado) {
   }
 
   apagarFlashManual();
+  xSemaphoreGive(mutexCamara);
 
   return true;
 }
@@ -1414,21 +1446,13 @@ void tareaCaptura(void* parametro) {
   for (;;) {
     EventoSensor evento;
     if (xQueueReceive(colaEventosSensor, &evento, portMAX_DELAY) == pdPASS) {
-      Serial.printf("[CAPTURA] Evento %d: guardando foto local antes de red.\n", evento.sensorId);
+      Serial.printf("[CAPTURA] Evento %d: procesando captura segun estado de red.\n", evento.sensorId);
       capturaOfflineEnCurso = true;
-      bool guardado = guardarAlarmaOffline(
-        evento.sensorId,
-        false,
-        "movimiento",
-        evento.disparoPorSensor3v
-      );
+      procesarAlarma(evento.sensorId, evento.disparoPorSensor3v);
       capturaOfflineEnCurso = false;
 
-      if (guardado) {
-        Serial.printf("[CAPTURA] Foto offline guardada. Pendientes=%d\n", contarAlarmasOfflinePendientes());
-      } else {
-        Serial.println("[CAPTURA] No se pudo guardar la foto offline.");
-      }
+      Serial.printf("[CAPTURA] Captura finalizada. Pendientes offline=%d\n",
+                    contarAlarmasOfflinePendientes());
     }
   }
 }
