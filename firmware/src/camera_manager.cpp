@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "camera_pins.h"
 #include "config.h"
+#include "config_defaults.h"
 
 bool CameraManager::begin() {
   camera_config_t config;

@@ -28,6 +28,7 @@
 #include "alarm_tasks.h"
 #include "offline_queue.h"
 #include "config.h"
+#include "config_defaults.h"
 
 // Token de sesión del dispositivo (se obtiene al autenticarse contra Firebase)
 String idToken = "";
@@ -62,7 +63,7 @@ bool inicializarCamara();
 camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& storagePath);
 String subirBytesAStorage(const uint8_t* data, size_t len, const String& storagePath);
-void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento = "movimiento");
+bool guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento = "movimiento");
 void procesarAlarma(int sensorId, bool disparoPorSensor3v = false);
 bool procesarCapturaManual(String& detalleResultado);
 void revisarComandoCapturaManual();
@@ -609,7 +610,7 @@ bool asegurarDnsHost(const char* host, const char* etiqueta, int maxIntentos) {
   return false;
 }
 
-void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento) {
+bool guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento) {
   // ".sv":"timestamp" le pide a Firebase que ponga la hora real del
   // servidor al momento de guardar, en vez de usar millis() (que solo
   // cuenta el tiempo desde que arrancó el ESP32 y no sirve como fecha real)
@@ -642,6 +643,8 @@ void guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String&
   if (okSimple || okCompat) {
     Serial.println("Alarma registrada en la base de datos.");
   }
+
+  return okSimple || okCompat;
 }
 
 // ==================== Lógica principal de alarma ====================
