@@ -22,9 +22,6 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
 #include "esp_camera.h"
 #include "camera_pins.h"
 #include "config.h"
@@ -39,7 +36,6 @@ unsigned long ultimoEstadoDispositivo = 0;
 unsigned long ultimoChequeoComandoManual = 0;
 bool camaraInicializadaOk = false;
 bool camaraActiva = false;
-volatile bool capturaOfflineEnCurso = false;
 int ultimoEstadoPIR1 = LOW;
 int estadoAnteriorPIR1 = LOW;
 unsigned long ultimoPulsoPIR1 = 0;
@@ -53,24 +49,12 @@ bool wifiConectadoPrevio = false;
 unsigned long ultimoIntentoReconexionWiFi = 0;
 unsigned long ultimoIntentoAuthFirebase = 0;
 
-const unsigned long INTERVALO_RECONEXION_WIFI_MS = 5000;
+const unsigned long INTERVALO_RECONEXION_WIFI_MS = 1000;
 const unsigned long INTERVALO_REINTENTO_AUTH_MS = 4000;
 
 const char* OFFLINE_QUEUE_FILE = "/offline_queue.txt";
 const int MAX_ALARMAS_OFFLINE = 2;
 const int MAX_FOTOS_POR_ALARMA_OFFLINE = 1;
-
-#define TAM_COLA_EVENTOS_SENSOR 4
-const unsigned long INTERVALO_TAREA_RED_MS = 20;
-
-struct EventoSensor {
-  int sensorId;
-  bool disparoPorSensor3v;
-};
-
-QueueHandle_t colaEventosSensor = nullptr;
-TaskHandle_t tareaRedHandle = nullptr;
-TaskHandle_t tareaCapturaHandle = nullptr;
 
 // ---------- Prototipos ----------
 void conectarWiFi();
@@ -117,9 +101,6 @@ void registrarEntradaModoOffline(const char* motivo);
 void registrarSalidaModoOffline();
 void reintentarWiFiEnSegundoPlano();
 void manejarEventoWiFi(WiFiEvent_t event, WiFiEventInfo_t info);
-void encolarEventoSensor(int sensorId, bool disparoPorSensor3v);
-void tareaCaptura(void* parametro);
-void tareaRed(void* parametro);
 
 void setup() {
   Serial.begin(115200);
@@ -161,32 +142,9 @@ void setup() {
 
   Serial.println("[BOOT] Camara inicializada");
 
-  colaEventosSensor = xQueueCreate(TAM_COLA_EVENTOS_SENSOR, sizeof(EventoSensor));
-  if (!colaEventosSensor) {
-    Serial.println("[BOOT] ERROR: no se pudo crear cola de eventos del sensor");
-  }
-
-  xTaskCreatePinnedToCore(
-    tareaCaptura,
-    "TareaCaptura",
-    8192,
-    nullptr,
-    2,
-    &tareaCapturaHandle,
-    1
-  );
-
-  xTaskCreatePinnedToCore(
-    tareaRed,
-    "TareaRed",
-    12288,
-    nullptr,
-    1,
-    &tareaRedHandle,
-    0
-  );
-
-  Serial.println("Sistema listo. Sensor en core 1; red en core 0.");
+  Serial.println("[BOOT] Iniciando WiFi");
+  conectarWiFi();
+  Serial.println("Sistema listo. Sensor y captura en loop.");
 }
 
 void loop() {
@@ -210,7 +168,7 @@ void loop() {
   if ((ahora - ultimaAlarmaTest) > INTERVALO_TEST_FOTO_MS) {
     ultimaAlarmaTest = ahora;
     Serial.println("[TEST] Disparo automatico de foto");
-    encolarEventoSensor(99, true);
+    procesarAlarma(99, true);
   }
 #endif
 
@@ -257,8 +215,22 @@ void loop() {
     ultimaAlarmaPIR1 = ahora;
     sensorPIR1Armado = false;
     Serial.printf(">>> Movimiento detectado: Sensor 1 (%s)\n", enlaceCaido ? "offline" : "online");
-    encolarEventoSensor(1, true);
+    procesarAlarma(1, true);
   }
+
+  if (!wifiDisponible || WiFi.status() != WL_CONNECTED) {
+    registrarEntradaModoOffline("sin wifi");
+    reintentarWiFiEnSegundoPlano();
+  } else {
+    registrarSalidaModoOffline();
+    if ((ahora - ultimoChequeoSincronizacionOffline) >= 10000) {
+      ultimoChequeoSincronizacionOffline = ahora;
+      sincronizarColaOffline();
+    }
+  }
+
+  revisarComandoCapturaManual();
+  publicarEstadoDispositivo(false);
 
   estadoAnteriorPIR1 = estadoPIR1;
 
@@ -1393,79 +1365,3 @@ void revisarComandoCapturaManual() {
   }
 }
 
-void encolarEventoSensor(int sensorId, bool disparoPorSensor3v) {
-  if (!colaEventosSensor) {
-    Serial.println("[SENSOR] Cola no disponible; evento descartado");
-    return;
-  }
-
-  EventoSensor evento = {sensorId, disparoPorSensor3v};
-  if (xQueueSend(colaEventosSensor, &evento, 0) != pdPASS) {
-    Serial.println("[SENSOR] Cola llena; evento descartado");
-    return;
-  }
-
-  Serial.println("[SENSOR] Evento encolado para tarea de red");
-}
-
-void tareaCaptura(void* parametro) {
-  (void)parametro;
-
-  for (;;) {
-    EventoSensor evento;
-    if (xQueueReceive(colaEventosSensor, &evento, portMAX_DELAY) == pdPASS) {
-      Serial.printf("[CAPTURA] Evento %d: guardando foto local antes de red.\n", evento.sensorId);
-      capturaOfflineEnCurso = true;
-      bool guardado = guardarAlarmaOffline(
-        evento.sensorId,
-        false,
-        "movimiento",
-        evento.disparoPorSensor3v
-      );
-      capturaOfflineEnCurso = false;
-
-      if (guardado) {
-        Serial.printf("[CAPTURA] Foto offline guardada. Pendientes=%d\n", contarAlarmasOfflinePendientes());
-      } else {
-        Serial.println("[CAPTURA] No se pudo guardar la foto offline.");
-      }
-    }
-  }
-}
-
-void tareaRed(void* parametro) {
-  (void)parametro;
-  conectarWiFi();
-
-  unsigned long ultimoEstado = 0;
-  unsigned long ultimoSync = 0;
-  unsigned long ultimoComando = 0;
-
-  for (;;) {
-    unsigned long ahora = millis();
-
-    if (!wifiDisponible || WiFi.status() != WL_CONNECTED) {
-      registrarEntradaModoOffline("sin wifi");
-      reintentarWiFiEnSegundoPlano();
-    } else {
-      registrarSalidaModoOffline();
-    }
-
-    if (ahora - ultimoComando >= 300) {
-      ultimoComando = ahora;
-      revisarComandoCapturaManual();
-    }
-
-    if (!capturaOfflineEnCurso && WiFi.status() == WL_CONNECTED && ahora - ultimoSync >= 10000) {
-      ultimoSync = ahora;
-      sincronizarColaOffline();
-    }
-
-    if (ahora - ultimoEstado >= 5000) {
-      ultimoEstado = ahora;
-      publicarEstadoDispositivo(false);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(INTERVALO_TAREA_RED_MS));
-  }
-}
