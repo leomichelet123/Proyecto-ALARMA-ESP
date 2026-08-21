@@ -64,7 +64,7 @@ camera_fb_t* tomarFoto();
 String subirFotoAStorage(camera_fb_t* fb, const String& storagePath);
 String subirBytesAStorage(const uint8_t* data, size_t len, const String& storagePath);
 bool guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento = "movimiento");
-void procesarAlarma(int sensorId, bool disparoPorSensor3v = false);
+bool procesarAlarma(int sensorId, bool disparoPorSensor3v = false);
 bool procesarCapturaManual(String& detalleResultado);
 void revisarComandoCapturaManual();
 bool leerComandoCapturaManualPendiente();
@@ -648,19 +648,20 @@ bool guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String&
 }
 
 // ==================== Lógica principal de alarma ====================
-void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
+bool procesarAlarma(int sensorId, bool disparoPorSensor3v) {
   bool usarFlash = disparoPorSensor3v;
   bool enlaceCaido = (!wifiDisponible || WiFi.status() != WL_CONNECTED);
   if (enlaceCaido) {
     registrarEntradaModoOffline("sin wifi");
     Serial.println("[OFFLINE] Sin WiFi: capturando una foto local con flash.");
-    guardarAlarmaOffline(sensorId, false, "movimiento", usarFlash);
-    return;
+    bool guardada = guardarAlarmaOffline(sensorId, false, "movimiento", usarFlash);
+    Serial.printf("[OFFLINE] Resultado de captura local: %s\n", guardada ? "OK" : "FALLO");
+    return guardada;
   }
 
   if (!mutexCamara || xSemaphoreTake(mutexCamara, pdMS_TO_TICKS(15000)) != pdTRUE) {
     Serial.println("[ALARM] Camara ocupada, se conserva el evento offline.");
-    return;
+    return false;
   }
 
   Serial.printf("[ALARM] Secuencia online | sensor=%d | fotos=%d\n",
@@ -732,7 +733,7 @@ void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
         }
         Serial.println("[ALARM] Red no disponible: evento conservado offline.");
         xSemaphoreGive(mutexCamara);
-        return;
+        return false;
       }
       free(copiaFoto);
     }
@@ -750,6 +751,7 @@ void procesarAlarma(int sensorId, bool disparoPorSensor3v) {
   }
 
   xSemaphoreGive(mutexCamara);
+  return true;
 }
 
 bool procesarCapturaManual(String& detalleResultado) {

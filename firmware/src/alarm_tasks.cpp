@@ -14,7 +14,7 @@ struct EventoSensor {
 
 extern bool wifiDisponible;
 extern volatile bool capturaOfflineEnCurso;
-extern void procesarAlarma(int sensorId, bool disparoPorSensor3v);
+extern bool procesarAlarma(int sensorId, bool disparoPorSensor3v);
 extern void conectarWiFi();
 extern void reintentarWiFiEnSegundoPlano();
 extern void registrarEntradaModoOffline(const char* motivo);
@@ -38,10 +38,11 @@ void tareaCaptura(void*) {
     if (xQueueReceive(colaEventosSensor, &evento, portMAX_DELAY) == pdPASS) {
       Serial.printf("[CAPTURA] Evento %d: procesando captura segun estado de red.\n", evento.sensorId);
       capturaOfflineEnCurso = true;
-      procesarAlarma(evento.sensorId, evento.disparoPorSensor3v);
+      bool resultado = procesarAlarma(evento.sensorId, evento.disparoPorSensor3v);
       capturaOfflineEnCurso = false;
-      Serial.printf("[CAPTURA] Captura finalizada. Pendientes offline=%d\n",
-                    contarAlarmasOfflinePendientes());
+      Serial.printf("[CAPTURA] Captura finalizada: %s | Pendientes offline=%d\n",
+            resultado ? "OK" : "FALLO",
+            contarAlarmasOfflinePendientes());
     }
   }
 }

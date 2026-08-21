@@ -347,8 +347,9 @@ function renderHistorialLista(data) {
       ? `<div class="history-time">Guardado en: ${alarma.storagePath}</div>`
       : '';
 
-    const thumb = alarma.photoUrl ? crearMiniaturaEvento(alarma) : document.createElement('div');
-    if (!alarma.photoUrl) {
+    const tieneFoto = Boolean(alarma.photoUrl || obtenerPathStorageDesdeEvento(alarma));
+    const thumb = tieneFoto ? crearMiniaturaEvento(alarma) : document.createElement('div');
+    if (!tieneFoto) {
       thumb.className = 'history-thumb';
     }
 
@@ -363,7 +364,7 @@ function renderHistorialLista(data) {
     badge.className = 'badge';
     badge.textContent = badgeEvento;
 
-    if (alarma.photoUrl) {
+    if (tieneFoto) {
       thumb.addEventListener('click', () => {
         abrirModal(thumb.src || alarma.photoUrl);
       });
@@ -432,26 +433,19 @@ function crearMiniaturaEvento(alarma) {
   img.alt = 'Foto de movimiento';
 
   const srcInicial = (alarma && typeof alarma.photoUrl === 'string') ? alarma.photoUrl : '';
-  if (srcInicial) {
+  const storagePath = obtenerPathStorageDesdeEvento(alarma);
+
+  if (storagePath) {
+    firebase.storage().ref().child(storagePath).getDownloadURL()
+      .then((url) => {
+        if (url) img.src = url;
+      })
+      .catch(() => {
+        if (srcInicial) img.src = srcInicial;
+      });
+  } else if (srcInicial) {
     img.src = srcInicial;
   }
-
-  img.addEventListener('error', async () => {
-    if (img.dataset.fallbackTried === '1') return;
-    img.dataset.fallbackTried = '1';
-
-    const storagePath = obtenerPathStorageDesdeEvento(alarma);
-    if (!storagePath) return;
-
-    try {
-      const url = await firebase.storage().ref().child(storagePath).getDownloadURL();
-      if (url && url !== img.src) {
-        img.src = url;
-      }
-    } catch (e) {
-      // Si tampoco resuelve por SDK, dejamos la miniatura en error.
-    }
-  });
 
   return img;
 }

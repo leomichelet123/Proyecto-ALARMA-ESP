@@ -175,6 +175,7 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
   }
 
   if (!guardarMetaEventoOffline(slot, sensorId, importante, tipoEvento)) {
+    Serial.printf("[OFFLINE] No se pudo escribir meta en slot %d\n", slot);
     xSemaphoreGive(mutexCamara);
     return false;
   }
@@ -223,7 +224,7 @@ bool guardarFotoOfflineDesdeBuffer(int sensorId, bool importante, const String& 
     if (slot >= 0) {
       limpiarSlot(slot);
     }
-    Serial.println("[OFFLINE] No se pudo guardar la foto en un slot.");
+    Serial.printf("[OFFLINE] No se pudo guardar la foto en slot %d\n", slot);
     return false;
   }
 
