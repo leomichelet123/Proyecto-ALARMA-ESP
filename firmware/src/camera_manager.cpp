@@ -31,12 +31,8 @@ bool CameraManager::begin() {
   config.frame_size = FRAMESIZE_QVGA;
   config.jpeg_quality = 16;
   config.fb_count = 1;
-
-  Serial.printf("[BOOT] PSRAM %sdetectada\n", psramFound() ? "" : "no ");
-  Serial.println("[BOOT] Llamando esp_camera_init()");
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Error al iniciar la cámara: 0x%x\n", err);
     initialized_ = false;
     return false;
   }
@@ -49,7 +45,6 @@ bool CameraManager::begin() {
 
 camera_fb_t* CameraManager::capture() {
   if (!active_ && !begin()) {
-    Serial.println("[CAM] No se pudo activar la camara");
     return nullptr;
   }
 
@@ -58,7 +53,6 @@ camera_fb_t* CameraManager::capture() {
   }
 
   if (needsStabilization_) {
-    Serial.println("[CAM] Descartando frames iniciales (estabilizacion)");
     for (int i = 0; i < 3; ++i) {
       camera_fb_t* discarded = esp_camera_fb_get();
       if (discarded) {
@@ -68,13 +62,9 @@ camera_fb_t* CameraManager::capture() {
     }
     needsStabilization_ = false;
   }
-
-  Serial.println("[CAM] Capturando foto");
   camera_fb_t* frame = esp_camera_fb_get();
   if (!frame) {
-    Serial.println("Error al capturar la foto.");
   } else {
-    Serial.printf("[CAM] Foto capturada: %u bytes\n", frame->len);
   }
   return frame;
 }
@@ -108,3 +98,5 @@ bool CameraManager::isInitialized() const {
 bool CameraManager::isActive() const {
   return active_;
 }
+
+

@@ -341,8 +341,15 @@ function renderHistorialLista(data) {
     const item = document.createElement('div');
     item.className = 'history-item';
     const esCapturaManual = (alarma.tipoEvento === 'captura_manual') || Number(alarma.sensor) === 0;
-    const tituloEvento = esCapturaManual ? 'Captura manual' : 'Sensor de movimiento';
-    const badgeEvento = esCapturaManual ? 'Captura' : 'Movimiento';
+    const tipoEventoRaw = (alarma && typeof alarma.tipoEvento === 'string') ? alarma.tipoEvento.trim() : '';
+    const tipoEventoNorm = tipoEventoRaw.toLowerCase();
+    const esOffline = tipoEventoNorm.includes('offline');
+    const tituloEvento = esCapturaManual
+      ? 'Captura manual'
+      : (esOffline ? 'Sensor de movimiento (offline)' : 'Sensor de movimiento');
+    const badgeEvento = esCapturaManual
+      ? 'Captura'
+      : (esOffline ? 'Movimiento offline' : 'Movimiento');
     const detalleRuta = esCapturaManual && alarma.storagePath
       ? `<div class="history-time">Guardado en: ${alarma.storagePath}</div>`
       : '';

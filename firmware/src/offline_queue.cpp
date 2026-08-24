@@ -53,6 +53,11 @@ void limpiarSlot(int slot) {
 }
 
 bool escribirArchivoSPIFFS(const String& ruta, const uint8_t* datos, size_t longitud) {
+  // Evita arrastrar contenido viejo si quedo un archivo huerfano en el slot.
+  if (SPIFFS.exists(ruta)) {
+    SPIFFS.remove(ruta);
+  }
+
   File archivo = SPIFFS.open(ruta, FILE_WRITE);
   if (!archivo) {
     return false;
@@ -100,21 +105,31 @@ bool guardarFotoEnSlot(int slot, const uint8_t* datos, size_t longitud) {
 bool sincronizarEventoOffline(int slot) {
   DynamicJsonDocument meta(256);
   if (!leerMetaEventoOffline(slot, meta)) {
-    Serial.printf("[OFFLINE] No se pudo leer meta del slot %d\n", slot);
-    return false;
+    limpiarSlot(slot);
+    return true;
   }
 
   int sensorId = meta["sensorId"] | 1;
   bool importante = meta["importante"] | false;
   String tipoEvento = meta["tipoEvento"] | "movimiento";
+  String tipoEventoOffline = tipoEvento;
+  if (!tipoEventoOffline.endsWith(" (offline)")) {
+    tipoEventoOffline += " (offline)";
+  }
 
   File foto = SPIFFS.open(rutaFotoOffline(slot), FILE_READ);
   if (!foto) {
-    Serial.printf("[OFFLINE] Falta foto del slot %d\n", slot);
-    return false;
+    limpiarSlot(slot);
+    return true;
   }
 
   size_t longitud = foto.size();
+  if (longitud == 0) {
+    foto.close();
+    limpiarSlot(slot);
+    return true;
+  }
+
   uint8_t* datos = static_cast<uint8_t*>(malloc(longitud));
   if (!datos) {
     foto.close();
@@ -125,7 +140,8 @@ bool sincronizarEventoOffline(int slot) {
   foto.close();
   if (leidos != longitud) {
     free(datos);
-    return false;
+    limpiarSlot(slot);
+    return true;
   }
 
   String storagePath = "offline/slot_" + String(slot) + "/photo_1.jpg";
@@ -133,23 +149,33 @@ bool sincronizarEventoOffline(int slot) {
   free(datos);
 
   if (photoUrl == "") {
-    Serial.printf("[OFFLINE] Fallo la subida del slot %d\n", slot);
     return false;
   }
 
-  if (!guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, importante, tipoEvento)) {
-    Serial.printf("[OFFLINE] Foto subida pero registro RTDB fallo para slot %d\n", slot);
+  if (!guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, importante, tipoEventoOffline)) {
     return false;
   }
 
   limpiarSlot(slot);
-  Serial.printf("[OFFLINE] Slot sincronizado: %d\n", slot);
   return true;
 }
 }
 
 bool inicializarAlmacenamientoOffline() {
-  return SPIFFS.begin(true);
+  if (!SPIFFS.begin(true)) {
+    return false;
+  }
+
+  // Repara archivos parciales de un reset/corte para que no bloqueen la cola.
+  for (int slot = 0; slot < MAX_ALARMAS_OFFLINE; ++slot) {
+    bool tieneMeta = SPIFFS.exists(rutaMetaOffline(slot));
+    bool tieneFoto = SPIFFS.exists(rutaFotoOffline(slot));
+    if (tieneMeta != tieneFoto) {
+      limpiarSlot(slot);
+    }
+  }
+
+  return true;
 }
 
 int contarAlarmasOfflinePendientes() {
@@ -165,17 +191,14 @@ int contarAlarmasOfflinePendientes() {
 bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvento, bool usarFlash) {
   int slot = buscarSlotLibre();
   if (slot < 0) {
-    Serial.println("[OFFLINE] No hay slots libres para otra alarma.");
     return false;
   }
 
   if (!mutexCamara || xSemaphoreTake(mutexCamara, pdMS_TO_TICKS(15000)) != pdTRUE) {
-    Serial.println("[OFFLINE] Camara ocupada, no se pudo guardar la alarma.");
     return false;
   }
 
   if (!guardarMetaEventoOffline(slot, sensorId, importante, tipoEvento)) {
-    Serial.printf("[OFFLINE] No se pudo escribir meta en slot %d\n", slot);
     xSemaphoreGive(mutexCamara);
     return false;
   }
@@ -191,7 +214,6 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
   if (!foto) {
     limpiarSlot(slot);
     xSemaphoreGive(mutexCamara);
-    Serial.println("[OFFLINE] No se pudo capturar foto para guardar localmente.");
     return false;
   }
 
@@ -200,7 +222,6 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
   if (!guardada) {
     limpiarSlot(slot);
     xSemaphoreGive(mutexCamara);
-    Serial.println("[OFFLINE] No se pudo escribir la foto en SPIFFS.");
     return false;
   }
 
@@ -208,13 +229,11 @@ bool guardarAlarmaOffline(int sensorId, bool importante, const String& tipoEvent
     apagarFlashManual();
   }
   xSemaphoreGive(mutexCamara);
-  Serial.printf("[OFFLINE] Evento guardado en slot %d\n", slot);
   return true;
 }
 
 bool guardarFotoOfflineDesdeBuffer(int sensorId, bool importante, const String& tipoEvento, const uint8_t* datos, size_t longitud) {
   if (!datos || longitud == 0) {
-    Serial.println("[OFFLINE] No se pudo encolar la foto capturada.");
     return false;
   }
 
@@ -224,25 +243,20 @@ bool guardarFotoOfflineDesdeBuffer(int sensorId, bool importante, const String& 
     if (slot >= 0) {
       limpiarSlot(slot);
     }
-    Serial.printf("[OFFLINE] No se pudo guardar la foto en slot %d\n", slot);
     return false;
   }
-
-  Serial.printf("[OFFLINE] Foto capturada guardada en slot %d\n", slot);
   return true;
 }
 
 void registrarEntradaModoOffline(const char* motivo) {
   if (!modoOfflineActivo) {
     modoOfflineActivo = true;
-    Serial.printf("[OFFLINE] ENTRE MODO OFFLINE (%s)\n", motivo);
   }
 }
 
 void registrarSalidaModoOffline() {
   if (modoOfflineActivo) {
     modoOfflineActivo = false;
-    Serial.println("[OFFLINE] Sali de modo offline");
   }
 }
 
@@ -251,15 +265,20 @@ bool sincronizarColaOffline() {
     return false;
   }
 
-  int slot = buscarPrimerSlotPendiente();
-  if (slot < 0) {
-    return true;
-  }
+  // Procesa todos los pendientes en la misma reconexion para evitar
+  // que las fotos offline lleguen con mucho atraso.
+  for (int i = 0; i < MAX_ALARMAS_OFFLINE; ++i) {
+    int slot = buscarPrimerSlotPendiente();
+    if (slot < 0) {
+      return true;
+    }
 
-  if (!sincronizarEventoOffline(slot)) {
-    Serial.printf("[OFFLINE] Se detuvo la sincronizacion en slot %d\n", slot);
-    return false;
+    if (!sincronizarEventoOffline(slot)) {
+      return false;
+    }
   }
 
   return true;
 }
+
+

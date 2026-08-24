@@ -22,6 +22,7 @@ extern void registrarSalidaModoOffline();
 extern void revisarComandoCapturaManual();
 extern bool sincronizarColaOffline();
 extern void publicarEstadoDispositivo(bool forzar);
+extern bool asegurarAutenticacionFirebase();
 extern int contarAlarmasOfflinePendientes();
 
 namespace {
@@ -29,20 +30,14 @@ constexpr int TAM_COLA_EVENTOS_SENSOR = 4;
 constexpr unsigned long INTERVALO_TAREA_RED_MS = 20;
 
 QueueHandle_t colaEventosSensor = nullptr;
-TaskHandle_t tareaRedHandle = nullptr;
-TaskHandle_t tareaCapturaHandle = nullptr;
 
 void tareaCaptura(void*) {
   for (;;) {
     EventoSensor evento;
     if (xQueueReceive(colaEventosSensor, &evento, portMAX_DELAY) == pdPASS) {
-      Serial.printf("[CAPTURA] Evento %d: procesando captura segun estado de red.\n", evento.sensorId);
       capturaOfflineEnCurso = true;
       bool resultado = procesarAlarma(evento.sensorId, evento.disparoPorSensor3v);
       capturaOfflineEnCurso = false;
-      Serial.printf("[CAPTURA] Captura finalizada: %s | Pendientes offline=%d\n",
-            resultado ? "OK" : "FALLO",
-            contarAlarmasOfflinePendientes());
     }
   }
 }
@@ -53,15 +48,30 @@ void tareaRed(void*) {
   unsigned long ultimoEstado = 0;
   unsigned long ultimoSync = 0;
   unsigned long ultimoComando = 0;
+  bool estabaConectado = false;
 
   for (;;) {
     unsigned long ahora = millis();
+    bool conectado = wifiDisponible && WiFi.status() == WL_CONNECTED;
 
-    if (!wifiDisponible || WiFi.status() != WL_CONNECTED) {
+    if (!conectado) {
       registrarEntradaModoOffline("sin wifi");
       reintentarWiFiEnSegundoPlano();
     } else {
       registrarSalidaModoOffline();
+    }
+
+    if (conectado != estabaConectado) {
+      estabaConectado = conectado;
+      if (conectado) {
+        asegurarAutenticacionFirebase();
+        publicarEstadoDispositivo(true);
+        if (!capturaOfflineEnCurso) {
+          sincronizarColaOffline();
+        }
+        ultimoEstado = ahora;
+        ultimoSync = ahora;
+      }
     }
 
     if (ahora - ultimoComando >= 300) {
@@ -69,12 +79,12 @@ void tareaRed(void*) {
       revisarComandoCapturaManual();
     }
 
-    if (!capturaOfflineEnCurso && WiFi.status() == WL_CONNECTED && ahora - ultimoSync >= 10000) {
+    if (!capturaOfflineEnCurso && conectado && ahora - ultimoSync >= 2000) {
       ultimoSync = ahora;
       sincronizarColaOffline();
     }
 
-    if (ahora - ultimoEstado >= 5000) {
+    if (conectado && ahora - ultimoEstado >= 2000) {
       ultimoEstado = ahora;
       publicarEstadoDispositivo(false);
     }
@@ -87,7 +97,6 @@ void tareaRed(void*) {
 void inicializarTareasAlarma() {
   colaEventosSensor = xQueueCreate(TAM_COLA_EVENTOS_SENSOR, sizeof(EventoSensor));
   if (!colaEventosSensor) {
-    Serial.println("[BOOT] ERROR: no se pudo crear cola de eventos del sensor");
   }
 
   xTaskCreatePinnedToCore(
@@ -96,7 +105,7 @@ void inicializarTareasAlarma() {
     8192,
     nullptr,
     2,
-    &tareaCapturaHandle,
+    nullptr,
     1
   );
 
@@ -106,24 +115,20 @@ void inicializarTareasAlarma() {
     12288,
     nullptr,
     1,
-    &tareaRedHandle,
+    nullptr,
     0
   );
-
-  Serial.println("Sistema listo. Sensor en core 1; red en core 0.");
 }
 
 void encolarEventoSensor(int sensorId, bool disparoPorSensor3v) {
   if (!colaEventosSensor) {
-    Serial.println("[SENSOR] Cola no disponible; evento descartado");
     return;
   }
 
   EventoSensor evento = {sensorId, disparoPorSensor3v};
   if (xQueueSend(colaEventosSensor, &evento, 0) != pdPASS) {
-    Serial.println("[SENSOR] Cola llena; evento descartado");
     return;
   }
-
-  Serial.println("[SENSOR] Evento encolado para tarea de red");
 }
+
+
