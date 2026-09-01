@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include "esp_camera.h"
 
+// Administra la inicializacion, captura y liberacion de la camara ESP32-CAM,
+// junto con el control del flash y el estado del dispositivo.
 class CameraManager {
 public:
   bool begin();

@@ -1,5 +1,4 @@
 #include "alarm_tasks.h"
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include "freertos/FreeRTOS.h"
@@ -17,18 +16,17 @@ extern volatile bool capturaOfflineEnCurso;
 extern bool procesarAlarma(int sensorId, bool disparoPorSensor3v);
 extern void conectarWiFi();
 extern void reintentarWiFiEnSegundoPlano();
-extern void registrarEntradaModoOffline(const char* motivo);
+extern void registrarEntradaModoOffline();
 extern void registrarSalidaModoOffline();
 extern void revisarComandoCapturaManual();
 extern bool sincronizarColaOffline();
 extern void publicarEstadoDispositivo(bool forzar);
 extern bool asegurarAutenticacionFirebase();
-extern int contarAlarmasOfflinePendientes();
 
 namespace {
 constexpr int TAM_COLA_EVENTOS_SENSOR = 4;
 constexpr unsigned long INTERVALO_TAREA_RED_MS = 20;
-
+//se declara una cola de FreeRTOS.
 QueueHandle_t colaEventosSensor = nullptr;
 
 void tareaCaptura(void*) {
@@ -36,7 +34,7 @@ void tareaCaptura(void*) {
     EventoSensor evento;
     if (xQueueReceive(colaEventosSensor, &evento, portMAX_DELAY) == pdPASS) {
       capturaOfflineEnCurso = true;
-      bool resultado = procesarAlarma(evento.sensorId, evento.disparoPorSensor3v);
+      procesarAlarma(evento.sensorId, evento.disparoPorSensor3v);
       capturaOfflineEnCurso = false;
     }
   }
@@ -55,7 +53,7 @@ void tareaRed(void*) {
     bool conectado = wifiDisponible && WiFi.status() == WL_CONNECTED;
 
     if (!conectado) {
-      registrarEntradaModoOffline("sin wifi");
+      registrarEntradaModoOffline();
       reintentarWiFiEnSegundoPlano();
     } else {
       registrarSalidaModoOffline();
@@ -96,9 +94,7 @@ void tareaRed(void*) {
 
 void inicializarTareasAlarma() {
   colaEventosSensor = xQueueCreate(TAM_COLA_EVENTOS_SENSOR, sizeof(EventoSensor));
-  if (!colaEventosSensor) {
-  }
-
+//FreeRTOS
   xTaskCreatePinnedToCore(
     tareaCaptura,
     "TareaCaptura",

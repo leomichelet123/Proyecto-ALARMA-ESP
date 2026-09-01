@@ -343,13 +343,14 @@ function renderHistorialLista(data) {
     const esCapturaManual = (alarma.tipoEvento === 'captura_manual') || Number(alarma.sensor) === 0;
     const tipoEventoRaw = (alarma && typeof alarma.tipoEvento === 'string') ? alarma.tipoEvento.trim() : '';
     const tipoEventoNorm = tipoEventoRaw.toLowerCase();
-    const esOffline = tipoEventoNorm.includes('offline');
+    const rutaStorage = typeof alarma.storagePath === 'string' ? alarma.storagePath : '';
+    const esOffline = tipoEventoNorm.includes('offline') || rutaStorage.startsWith('offline/');
     const tituloEvento = esCapturaManual
       ? 'Captura manual'
       : (esOffline ? 'Sensor de movimiento (offline)' : 'Sensor de movimiento');
     const badgeEvento = esCapturaManual
       ? 'Captura'
-      : (esOffline ? 'Movimiento offline' : 'Movimiento');
+      : (esOffline ? 'Foto offline' : 'Movimiento');
     const detalleRuta = esCapturaManual && alarma.storagePath
       ? `<div class="history-time">Guardado en: ${alarma.storagePath}</div>`
       : '';

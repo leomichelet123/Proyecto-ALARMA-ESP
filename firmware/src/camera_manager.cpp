@@ -6,6 +6,7 @@
 #include "config.h"
 #include "config_defaults.h"
 
+// Inicializar la cámara y devolver true si funcionó o false si falló.
 bool CameraManager::begin() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -31,6 +32,7 @@ bool CameraManager::begin() {
   config.frame_size = FRAMESIZE_QVGA;
   config.jpeg_quality = 16;
   config.fb_count = 1;
+  //se inicializa el driver de la cámara.
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     initialized_ = false;
@@ -42,7 +44,7 @@ bool CameraManager::begin() {
   needsStabilization_ = true;
   return true;
 }
-
+//capture() toma una foto y devuelve un puntero al framebuffer de la cámara.
 camera_fb_t* CameraManager::capture() {
   if (!active_ && !begin()) {
     return nullptr;
@@ -62,13 +64,10 @@ camera_fb_t* CameraManager::capture() {
     }
     needsStabilization_ = false;
   }
-  camera_fb_t* frame = esp_camera_fb_get();
-  if (!frame) {
-  } else {
-  }
-  return frame;
+  return esp_camera_fb_get();
 }
 
+//desinicializa la cámara si está activa.
 void CameraManager::release() {
   if (active_) {
     esp_camera_deinit();

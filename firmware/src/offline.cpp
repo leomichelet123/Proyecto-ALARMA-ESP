@@ -1,4 +1,4 @@
-#include "offline_queue.h"
+#include "offline.h"
 
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
@@ -248,7 +248,7 @@ bool guardarFotoOfflineDesdeBuffer(int sensorId, bool importante, const String& 
   return true;
 }
 
-void registrarEntradaModoOffline(const char* motivo) {
+void registrarEntradaModoOffline() {
   if (!modoOfflineActivo) {
     modoOfflineActivo = true;
   }
@@ -280,5 +280,3 @@ bool sincronizarColaOffline() {
 
   return true;
 }
-
-
