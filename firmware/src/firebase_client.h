@@ -16,7 +16,7 @@ bool asegurarAutenticacionFirebase();
 
 String codificarNombreObjetoStorage(const String& nombreArchivo);
 String generarTokenDescarga();
-String subirBytesAStorage(const uint8_t* data, size_t len, const String& nombreArchivo);
+String subirBytesAStorage(const uint8_t* data, size_t len, const String& nombreArchivo, bool* authFallo = nullptr);
 
 bool postJsonEnDatabase(const String& url, const String& body);
 bool putJsonEnDatabase(const String& url, const String& body);

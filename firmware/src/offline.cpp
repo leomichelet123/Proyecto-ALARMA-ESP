@@ -13,7 +13,7 @@ extern SemaphoreHandle_t mutexCamara;
 extern camera_fb_t* tomarFoto();
 extern void encenderFlashManual();
 extern void apagarFlashManual();
-extern String subirBytesAStorage(const uint8_t* data, size_t len, const String& storagePath);
+extern String subirBytesAStorage(const uint8_t* data, size_t len, const String& storagePath, bool* authFallo);
 extern bool guardarAlarmaEnDatabase(int sensorId, const String& photoUrl, const String& storagePath, bool importante, const String& tipoEvento);
 extern bool asegurarAutenticacionFirebase();
 
@@ -145,7 +145,7 @@ bool sincronizarEventoOffline(int slot) {
   }
 
   String storagePath = "offline/slot_" + String(slot) + "/photo_1.jpg";
-  String photoUrl = subirBytesAStorage(datos, longitud, storagePath);
+  String photoUrl = subirBytesAStorage(datos, longitud, storagePath, nullptr);
   free(datos);
 
   if (photoUrl == "") {

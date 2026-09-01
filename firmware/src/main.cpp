@@ -237,29 +237,25 @@ bool procesarAlarma(int sensorId, bool disparoPorSensor3v) {
       String photoUrl = "";
       const int maxReintentosSubida = 3;
       for (int intentoSubida = 1; intentoSubida <= maxReintentosSubida; intentoSubida++) {
-        photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath);
+        bool authFallo = false;
+        photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath, &authFallo);
         if (photoUrl != "") {
           break;
         }
         if (intentoSubida < maxReintentosSubida) {
-          idToken = "";
-          if (!asegurarAutenticacionFirebase()) {
-            break;
+          if (authFallo) {
+            idToken = "";
+            if (!asegurarAutenticacionFirebase()) {
+              break;
+            }
           }
-          esperarTarea(180);
+          esperarTarea(400);
         }
       }
-      if (photoUrl != "") {
-        guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false, "movimiento");
-      } else {
-        guardarFotoOfflineDesdeBuffer(sensorId, false, "movimiento", copiaFoto, lenFoto);
-        free(copiaFoto);
-        if (camara.isActive()) {
-          camara.release();
-        }
-        xSemaphoreGive(mutexCamara);
-        return false;
-      }
+      // Con WiFi arriba no usamos la cola offline (son solo 2 slots para
+      // cortes reales de conexión): si falla la subida, seguimos con las
+      // fotos que quedan en vez de abortar todo el evento.
+      guardarAlarmaEnDatabase(sensorId, photoUrl, storagePath, false, "movimiento");
       free(copiaFoto);
     }
 
@@ -312,7 +308,8 @@ bool procesarCapturaManual(String& detalleResultado) {
 
       String storagePath = "capturas/manual_" + String(millis()) + "_i1.jpg";
       for (int intentoSubida = 1; intentoSubida <= maxIntentosSubida; intentoSubida++) {
-        String photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath);
+        bool authFallo = false;
+        String photoUrl = subirBytesAStorage(copiaFoto, lenFoto, storagePath, &authFallo);
         if (photoUrl != "") {
           guardarAlarmaEnDatabase(0, photoUrl, storagePath, true, "captura_manual");
           fotoSubidaOk = true;
@@ -320,9 +317,11 @@ bool procesarCapturaManual(String& detalleResultado) {
           break;
         }
         if (intentoSubida < maxIntentosSubida) {
-          idToken = "";
-          asegurarAutenticacionFirebase();
-          esperarTarea(180);
+          if (authFallo) {
+            idToken = "";
+            asegurarAutenticacionFirebase();
+          }
+          esperarTarea(400);
         }
       }
 

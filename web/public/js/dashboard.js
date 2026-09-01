@@ -9,7 +9,9 @@ let puedeVerificarAuthPorEmail = null;
 const RETENCION_DIAS_HISTORIAL = 7;
 const RETENCION_MS_HISTORIAL = RETENCION_DIAS_HISTORIAL * 24 * 60 * 60 * 1000;
 const LIMPIEZA_RETENCION_INTERVALO_MS = 15 * 60 * 1000;
-const VENTANA_ONLINE_CAMARA_MS = 60000;
+// El ESP32 escribe su lastSeen cada 2s con WiFi; con 3.5s alcanza para tolerar
+// un envio perdido sin tardar hasta 1 minuto en marcar "Sin conexion".
+const VENTANA_ONLINE_CAMARA_MS = 3500;
 const REFRESCO_SUAVE_MS = 3000;
 let ultimaLimpiezaRetencionMs = 0;
 let limpiezaRetencionEnCurso = false;

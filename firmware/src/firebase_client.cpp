@@ -151,7 +151,7 @@ String generarTokenDescarga() {
 
 // ==================== Firebase Storage ====================
 // Sube la foto usando la REST API de Firebase Storage (Google Cloud Storage JSON API)
-String subirBytesAStorage(const uint8_t* data, size_t len, const String& nombreArchivo) {
+String subirBytesAStorage(const uint8_t* data, size_t len, const String& nombreArchivo, bool* authFallo) {
   if (!asegurarDnsHost("firebasestorage.googleapis.com")) {
     return "";
   }
@@ -181,6 +181,9 @@ String subirBytesAStorage(const uint8_t* data, size_t len, const String& nombreA
     photoUrl = "https://firebasestorage.googleapis.com/v0/b/" +
                String(FIREBASE_STORAGE_BUCKET) +
                "/o/" + encodedName + "?alt=media&token=" + downloadToken;
+  } else if (authFallo && (httpCode == 401 || httpCode == 403)) {
+    // Solo en este caso vale la pena gastar otro handshake TLS reautenticando.
+    *authFallo = true;
   }
   http.end();
   return photoUrl;
