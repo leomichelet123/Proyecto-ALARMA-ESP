@@ -1,5 +1,5 @@
-#ifndef CAMERA_MANAGER_H
-#define CAMERA_MANAGER_H
+#ifndef CONTROL_CAMARA_H
+#define CONTROL_CAMARA_H
 
 #include <stddef.h>
 #include "esp_camera.h"

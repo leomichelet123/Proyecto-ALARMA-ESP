@@ -4,7 +4,7 @@
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include "freertos/semphr.h"
-#include "camera_manager.h"
+#include "Control_camara.h"
 #include "config.h"
 
 extern bool wifiDisponible;

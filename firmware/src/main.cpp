@@ -6,12 +6,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "camera_manager.h"
-#include "alarm_tasks.h"
+#include "Control_camara.h"
+#include "Tareas_alarma.h"
 #include "offline.h"
 #include "firebase_client.h"
 #include "config.h"
-#include "config_defaults.h"
 
 unsigned long ultimaAlarmaPIR1 = 0;
 unsigned long ultimaAlarmaTest = 0;

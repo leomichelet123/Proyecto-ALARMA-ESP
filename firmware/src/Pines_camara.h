@@ -1,5 +1,5 @@
-#ifndef CAMERA_PINS_H
-#define CAMERA_PINS_H
+#ifndef PINES_CAMARA_H
+#define PINES_CAMARA_H
 
 // Pines fijos de la cámara para AI-Thinker ESP32-CAM
 // No modificar: vienen soldados así en la placa

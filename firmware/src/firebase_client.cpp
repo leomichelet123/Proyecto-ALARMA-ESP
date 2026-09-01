@@ -3,10 +3,9 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include "camera_manager.h"
+#include "Control_camara.h"
 #include "offline.h"
 #include "config.h"
-#include "config_defaults.h"
 
 String idToken = "";
 

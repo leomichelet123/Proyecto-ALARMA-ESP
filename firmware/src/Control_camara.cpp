@@ -1,10 +1,9 @@
-#include "camera_manager.h"
+#include "Control_camara.h"
 
 #include <Arduino.h>
 #include "freertos/task.h"
-#include "camera_pins.h"
+#include "Pines_camara.h"
 #include "config.h"
-#include "config_defaults.h"
 
 // Inicializar la cámara y devolver true si funcionó o false si falló.
 bool CameraManager::begin() {

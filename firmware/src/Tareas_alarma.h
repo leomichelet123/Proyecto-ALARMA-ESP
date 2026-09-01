@@ -1,5 +1,5 @@
-#ifndef ALARM_TASKS_H
-#define ALARM_TASKS_H
+#ifndef TAREAS_ALARMA_H
+#define TAREAS_ALARMA_H
 
 void inicializarTareasAlarma();
 void encolarEventoSensor(int sensorId, bool disparoPorSensor3v);
